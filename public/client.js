@@ -23,6 +23,40 @@ const overlay = document.getElementById('overlay'), panel = document.getElementB
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
 
+// ---------------------------------------------------------------- camera view: top-down, third person or first person
+// Each player picks their own view; it only changes how your screen is drawn, not the game.
+const VIEWS = [['top', 'Top-down'], ['tpp', 'Third person'], ['fps', 'First person']];
+let viewMode = VIEWS.some(v => v[0] === store.get('kb-view')) ? store.get('kb-view') : 'top';
+let pitch = 0; // up/down look in the 3D views
+const glCanvas = document.getElementById('gl');
+let v3d = null, v3dLoading = null, v3dError = '';
+function load3D() {
+  if (v3d || v3dLoading) return v3dLoading;
+  v3dLoading = import('./view3d.js').then(m => {
+    v3d = m.createView3D(glCanvas); v3d.resize(W, H, DPR);
+    if (G) v3d.build(G);
+  }).catch(e => { console.error(e); v3dError = '3D view failed to load. Using top-down.'; setView('top'); });
+  return v3dLoading;
+}
+function setView(mode) {
+  viewMode = mode; store.set('kb-view', mode); pitch = 0;
+  if (mode !== 'top') load3D();
+  else if (document.pointerLockElement) document.exitPointerLock();
+  cvs.classList.toggle('mode3d', mode !== 'top');
+  glCanvas.style.display = mode === 'top' ? 'none' : 'block';
+  if (G && ui === 'play') addMsg(`View: ${VIEWS.find(v => v[0] === mode)[1]}`, '#b9b5d6', 1.5);
+}
+function viewPicker() {
+  return `<label>Your view</label><div class="seg" id="viewpick">${VIEWS.map(([k, n]) => `<button data-view="${k}" class="${k === viewMode ? 'on' : ''}">${n}</button>`).join('')}</div>`;
+}
+function bindViewPicker() {
+  panel.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
+    setView(b.dataset.view);
+    panel.querySelectorAll('[data-view]').forEach(x => x.classList.toggle('on', x === b));
+  });
+}
+addEventListener('resize', () => { if (v3d) v3d.resize(W, H, DPR); });
+
 // ---------------------------------------------------------------- networking
 let ws, myId = null, lan = [], ui = 'home', homeError = '';
 const room = { code: null, host: null, players: [], state: null };
@@ -58,6 +92,8 @@ function onMsg(m) {
     case 'tp': if (G) { G.me.x = m.x; G.me.y = m.y; G.tpSeq = m.s; } break;
     case 'msg': if (G) addMsg(m.text, m.color, m.dur); break;
     case 'end':
+      if (document.pointerLockElement) document.exitPointerLock();
+      chase.pause(); chase.currentTime = 0;
       if (G) { G.result = m; ui = 'ended'; renderEnd(); }
       break;
   }
@@ -72,20 +108,25 @@ function renderHome() {
     <h1>KEY<span>BOUND</span></h1>
     <p class="sub">Online co-op escape. Everyone plays on their own device.</p>
     <label for="name">Your name</label>
-    <input id="name" maxlength="14" placeholder="Name" value="${esc(store.get('kb-name') || '')}">
+    <input id="name" maxlength="14" placeholder="Name" value="${esc(store.get('kb-name') || '')}" style="margin-bottom:14px">
+    ${viewPicker()}
     <div class="cols">
       <div class="card"><h3>Host a game</h3><p>Create a room, then send the invite link to your friends.</p><button class="go" id="host">Host game</button></div>
       <div class="card"><h3>Join a game</h3><input id="code" class="code" maxlength="4" placeholder="CODE" value="${esc(code)}"><button class="go" id="join">Join</button></div>
     </div>
-    <p class="err">${esc(homeError)}</p>
+    <p class="err">${esc(homeError || v3dError)}</p>
+    ${musicButton()}
     <details ${code ? '' : 'open'}><summary>How to play</summary><ul class="rules">
       <li>The gate has <b>one lock per player</b>. Each of you has a hidden key that <b>only you can see</b>.</li>
       <li>Find your key (watch the signal meter), carry it to the <b style="color:#b388ff">gate</b>, then escape once every lock is open.</li>
       <li>It's dark. You only see what your headlight shows, and walls block it. Listen for the heartbeat: the <b style="color:#ff5252">entity</b> is close.</li>
       <li><b style="color:#69f0ae">Safe zones</b> move every 10 seconds. The entity can't touch you inside one. Dashed outlines show where the next ones will appear.</li>
       <li>Getting caught costs a team life (3 total). You respawn and drop your key where you were caught.</li>
-      <li><b>PC:</b> move with WASD or the arrow keys; A/D (or ←/→) turn you left and right. <b>Phone:</b> drag anywhere to move. Your headlight points the way you walk.</li>
+      <li><b>Top-down, PC:</b> move with WASD or the arrow keys; your headlight points the way you walk. <b>Phone:</b> drag anywhere to move.</li>
+      <li><b>First / third person, PC:</b> click the game to look around with the mouse (Esc frees it). W/S walk, A/D step sideways, ←/→ or Q/E turn. <b>Phone:</b> drag up/down to walk, left/right to turn.</li>
+      <li>Press <b>V</b> during a game to switch views, and <b>M</b> to turn the music on or off.</li>
     </ul></details>`;
+  bindViewPicker(); bindMusicButton();
   const nameEl = document.getElementById('name'), codeEl = document.getElementById('code');
   const name = () => { const n = nameEl.value.trim(); store.set('kb-name', n); return n; };
   document.getElementById('host').onclick = () => { ensureAudio(); homeError = ''; send({ t: 'create', name: name() }); };
@@ -111,11 +152,14 @@ function renderLobby() {
     <label>Invite link</label>
     ${links.map(l => `<div class="linkrow"><input readonly value="${esc(l)}"><button data-copy="${esc(l)}">Copy</button></div>`).join('')}
     ${local ? `<p class="note">You're playing on <b>localhost</b>, so the link above is your local-network address. It works for friends on the same Wi-Fi. For friends elsewhere, use a tunnel link instead (see README).</p>` : ''}
-    <h3 style="margin-top:18px">Players (${room.players.length}/${MAX_PLAYERS})</h3>
+    <div style="margin-top:18px">${viewPicker()}</div>
+    <h3>Players (${room.players.length}/${MAX_PLAYERS})</h3>
     <ul class="plist">${room.players.map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}${p.id === room.host ? '<em>host</em>' : ''}${p.id === myId ? '<em>you</em>' : ''}</li>`).join('')}</ul>
     ${isHost ? `<button class="go" id="start">Start game</button><p class="note">The gate will need ${room.players.length} key${room.players.length > 1 ? 's' : ''}, one for each player.</p>`
-             : `<p class="sub">Waiting for the host to start…</p>`}`;
+             : `<p class="sub">Waiting for the host to start…</p>`}
+    ${musicButton()}`;
   panel.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(b));
+  bindViewPicker(); bindMusicButton();
   if (isHost) document.getElementById('start').onclick = () => { ensureAudio(); send({ t: 'start' }); };
 }
 
@@ -162,11 +206,13 @@ function initGame(m) {
   };
   for (const p of m.players)
     G.players.set(p.id, { ...p, rx: p.x, ry: p.y, tx: p.x, ty: p.y, ta: Sh.START_YAW, ra: Sh.START_YAW, safe: false, inv: true, esc: false, ks: 'hidden', walk: 0, flip: 1 });
-  aim = Sh.START_YAW;
+  aim = Sh.START_YAW; pitch = 0;
   renderMaps();
+  if (v3d) v3d.build(G);
 }
 
 function applySnapshot(s) {
+  G.chase = !!s.chase;
   G.time = s.time; G.lives = s.lives; G.zt = s.zt; G.zones = s.zones; G.next = s.next;
   G.gate.open = s.gate.open; G.gate.ins = s.gate.ins; G.key = s.key; G.danger = s.danger;
   const seen = new Set();
@@ -192,11 +238,28 @@ addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   keys.add(e.code);
   if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+  if (e.code === 'KeyM' && !e.repeat) setMusic(!musicOn);
+  if (e.code === 'KeyV' && !e.repeat && G && ui === 'play') {
+    const i = VIEWS.findIndex(v => v[0] === viewMode);
+    setView(VIEWS[(i + 1) % VIEWS.length][0]);
+  }
 });
 addEventListener('keyup', e => keys.delete(e.code));
+addEventListener('pointerdown', () => { if (musicOn && music.paused) music.play().catch(() => {}); });
 addEventListener('blur', () => keys.clear());
 
-cvs.addEventListener('mousedown', () => ensureAudio());
+cvs.addEventListener('mousedown', () => {
+  ensureAudio();
+  // 3D views: click to capture the mouse for looking around
+  if (viewMode !== 'top' && ui === 'play' && !document.pointerLockElement && cvs.requestPointerLock) {
+    try { const r = cvs.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch {}
+  }
+});
+addEventListener('mousemove', e => {
+  if (document.pointerLockElement !== cvs || viewMode === 'top' || ui !== 'play') return;
+  aim += e.movementX * 0.0025;
+  pitch = Math.max(-0.7, Math.min(0.7, pitch - e.movementY * 0.0025));
+});
 
 // touch: drag anywhere to move
 let joy = null;
@@ -229,14 +292,29 @@ function inputVector() {
 
 const lerpAngle = (a, b, k) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * k;
 
-// ---------------------------------------------------------------- audio (heartbeat when the entity is near)
+// ---------------------------------------------------------------- audio (background music, heartbeat when the entity is near)
 let actx = null, nextBeat = 0;
+const MUSIC_VOL = 0.35;
+const music = new Audio('music.mp3'); music.loop = true; music.volume = MUSIC_VOL;
+let musicOn = store.get('kb-music') !== 'off';
+// chase sound: loops while the entity is hunting you, louder the closer it gets
+const chase = new Audio('chase.mp3'); chase.loop = true; chase.volume = 0;
 function ensureAudio() {
   try {
     if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
     if (actx.state === 'suspended') actx.resume();
   } catch {}
+  if (musicOn && music.paused) music.play().catch(() => {}); // browsers only allow this after a click or key press
 }
+function setMusic(on) {
+  musicOn = on; store.set('kb-music', on ? 'on' : 'off');
+  if (on) music.play().catch(() => {}); else music.pause();
+  document.querySelectorAll('[data-music]').forEach(b => b.textContent = musicLabel());
+  if (G && ui === 'play') addMsg(on ? 'Music on' : 'Music off', '#b9b5d6', 1.5);
+}
+const musicLabel = () => musicOn ? '♪ Music: on' : '♪ Music: off';
+function musicButton() { return `<button data-music style="margin-top:12px">${musicLabel()}</button>`; }
+function bindMusicButton() { panel.querySelectorAll('[data-music]').forEach(b => b.onclick = () => setMusic(!musicOn)); }
 function thump(time, vol) {
   const o = actx.createOscillator(), g = actx.createGain();
   o.type = 'sine';
@@ -270,20 +348,50 @@ function update(dt) {
   // the headlight flickers when the entity is close
   G.flicker = G.danger > 0.4 && Math.random() < G.danger * 0.2 ? 0.35 : 1;
   heartbeat();
+  const chasing = G.chase && ui === 'play';
+  // music gets quieter when the entity is near (and while it chases you), so you hear the heartbeat and the chase sound
+  music.volume += (MUSIC_VOL * (1 - 0.7 * G.danger) * (chasing ? 0.4 : 1) - music.volume) * Math.min(1, dt * 3);
+  const chaseVol = chasing ? 0.55 + 0.45 * G.danger : 0;
+  chase.volume = Math.max(0, Math.min(1, chase.volume + (chaseVol - chase.volume) * Math.min(1, dt * (chasing ? 6 : 2.5))));
+  if (chasing && chase.paused) chase.play().catch(() => {});
+  else if (!chasing && !chase.paused && chase.volume < 0.02) { chase.pause(); chase.currentTime = 0; }
 
   const meP = G.players.get(myId);
   G.moving = false;
   if (ui !== 'play' || !meP || meP.esc) return;
-  const [mx, my] = inputVector();
+  let mx, my;
+  if (viewMode === 'top') {
+    [mx, my] = inputVector();
+    // A/D (or ←/→) turn you left/right; the headlight points the way you're walking
+    if (mx) G.flip = mx < 0 ? -1 : 1;
+    if (mx || my) aim = lerpAngle(aim, Math.atan2(my, mx), 1 - Math.exp(-dt * 12));
+  } else {
+    // 3D views: W/S walk where you face, A/D step sideways, ←/→ or Q/E turn (the mouse turns too)
+    let fwd = 0, side = 0, turn = 0;
+    if (keys.has('KeyW') || keys.has('ArrowUp')) fwd++;
+    if (keys.has('KeyS') || keys.has('ArrowDown')) fwd--;
+    if (keys.has('KeyD')) side++;
+    if (keys.has('KeyA')) side--;
+    if (keys.has('ArrowRight') || keys.has('KeyE')) turn++;
+    if (keys.has('ArrowLeft') || keys.has('KeyQ')) turn--;
+    if (joy) { // touch: drag up/down to walk, left/right to turn
+      const dx = joy.x - joy.ox, dy = joy.y - joy.oy;
+      if (Math.abs(dy) > 12) fwd = Math.max(-1, Math.min(1, -dy / 50));
+      if (Math.abs(dx) > 12) turn = Math.max(-1, Math.min(1, dx / 60));
+    }
+    aim += turn * 2.6 * dt;
+    const c = Math.cos(aim), s = Math.sin(aim);
+    mx = c * fwd - s * side; my = s * fwd + c * side;
+    const l = Math.hypot(mx, my); if (l > 1) { mx /= l; my /= l; }
+    if (c > 0.3) G.flip = 1; else if (c < -0.3) G.flip = -1;
+  }
   if (mx || my) {
     const bx = G.me.x, by = G.me.y;
     Sh.moveCircle(G, G.me, mx * PLAYER_SPEED * dt, my * PLAYER_SPEED * dt, PLAYER_R);
     G.moving = G.me.x !== bx || G.me.y !== by;
   }
   G.walk = G.moving ? G.walk + dt * 12 : 0;
-  // A/D (or ←/→) turn you left/right; the headlight points the way you're walking
-  if (mx) G.flip = mx < 0 ? -1 : 1;
-  if (mx || my) aim = lerpAngle(aim, Math.atan2(my, mx), 1 - Math.exp(-dt * 12));
+  aim = Math.atan2(Math.sin(aim), Math.cos(aim)); // keep it in -PI..PI
 
   const now = performance.now();
   const turned = G.sentA === null || Math.abs(aim - G.sentA) > 0.03;
@@ -520,16 +628,45 @@ function nameTag(text, x, y, color) {
 }
 
 // ---------------------------------------------------------------- frame
-function drawWorld(t) {
+// whose eyes we see through: yours, or a teammate's after you escape
+function getView() {
   const meP = G.players.get(myId);
-  // whose eyes we see through: yours, or a teammate's after you escape
-  let view;
-  if (meP && !meP.esc) view = { x: G.me.x, y: G.me.y, a: aim, id: myId };
-  else {
-    const mate = [...G.players.entries()].find(([id, p]) => id !== myId && !p.esc);
-    view = mate ? { x: mate[1].rx, y: mate[1].ry, a: mate[1].ra, id: mate[0] }
-                : { x: center(G.gate.ix), y: center(G.gate.iy), a: Math.atan2(G.gate.y - G.gate.iy, G.gate.x - G.gate.ix), id: null };
+  if (meP && !meP.esc) return { x: G.me.x, y: G.me.y, a: aim, id: myId };
+  const mate = [...G.players.entries()].find(([id, p]) => id !== myId && !p.esc);
+  return mate ? { x: mate[1].rx, y: mate[1].ry, a: mate[1].ra, id: mate[0] }
+              : { x: center(G.gate.ix), y: center(G.gate.iy), a: Math.atan2(G.gate.y - G.gate.iy, G.gate.x - G.gate.ix), id: null };
+}
+
+// first / third person: same visibility rules as top-down, drawn in 3D by view3d.js
+function draw3D(t) {
+  const view = getView(), mine = view.id === myId;
+  const players = new Map();
+  for (const [id, p] of G.players) {
+    if (p.esc) continue;
+    const self = id === myId;
+    players.set(id, self ? { x: G.me.x, y: G.me.y, a: aim, walk: G.walk, inv: p.inv, ks: p.ks, show: true }
+                         : { x: p.rx, y: p.ry, a: p.ra, walk: p.walk, inv: p.inv, ks: p.ks, show: true });
   }
+  let key = null;
+  if (G.key && G.key.state === 'hidden') { // only YOUR key
+    const kp = { x: center(G.key.x), y: center(G.key.y) };
+    if (isLit(view, kp)) key = kp;
+  }
+  let ent = null;
+  if (G.ent) {
+    const ep = { x: G.ent.rx, y: G.ent.ry }, lit = isLit(view, ep);
+    ent = { ...ep, stun: !!G.ent.stun, lit, eyes: lit || hasLOS(view, ep) };
+  }
+  v3d.render({
+    G, view, t, mode: viewMode, players, key, ent,
+    pitch: mine ? pitch : 0, flicker: mine ? G.flicker : 1, walk: mine ? G.walk : 0,
+    backRoom: castRay(view.x, view.y, view.a + Math.PI, 2.2 * TILE), // room behind you for the third-person camera
+  });
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cvs.width, cvs.height);
+}
+
+function drawWorld(t) {
+  const view = getView();
   const T = (c, s) => c.setTransform(DPR * Z * s, 0, 0, DPR * Z * s, DPR * (W / 2 - view.x * Z), DPR * (H / 2 - view.y * Z));
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -696,7 +833,13 @@ function drawHud(t) {
   const m = Math.floor(G.time / 60), s = Math.floor(G.time % 60);
   ctx.fillStyle = '#c9c6da'; ctx.fillText(`${m}:${String(s).padStart(2, '0')}`, cols[3], cy);
 
-  ctx.textBaseline = 'alphabetic';
+  // which view you're in, and how to switch
+  ctx.font = '12px system-ui'; ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = 'rgba(201,198,218,.75)';
+  const vName = VIEWS.find(v => v[0] === viewMode)[1];
+  ctx.fillText(isTouch ? vName : `${vName} · V to switch view · M music ${musicOn ? 'off' : 'on'}`, W - 12, H - 14);
+  if (viewMode !== 'top' && !isTouch && document.pointerLockElement !== cvs && !meP.esc)
+    ctx.fillText('Click to look around with the mouse', W - 12, H - 32);
+  ctx.textAlign = 'center';
   G.msgs.forEach((mg, i) => {
     ctx.globalAlpha = Math.min(1, mg.t);
     ctx.font = `bold ${W < 480 ? 13 : 16}px system-ui`; ctx.fillStyle = mg.color;
@@ -718,10 +861,14 @@ function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   const t = now / 1000;
   update(dt);
-  if (G && G.players.get(myId)) { drawWorld(t); drawHud(t); }
+  if (G && G.players.get(myId)) {
+    if (viewMode !== 'top' && v3d && v3d.ready) draw3D(t); else drawWorld(t); // top-down until the 3D view has loaded
+    drawHud(t);
+  }
   else { ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = '#07070d'; ctx.fillRect(0, 0, W, H); }
   requestAnimationFrame(frame);
 }
+setView(viewMode);
 connect();
 renderHome();
 requestAnimationFrame(frame);

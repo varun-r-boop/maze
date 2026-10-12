@@ -20,7 +20,6 @@
   S.center = t => t * TILE + TILE / 2;
   S.tileOf = o => ({ x: Math.floor(o.x / TILE), y: Math.floor(o.y / TILE) });
   S.dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  const shuffle = S.shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = rand(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
   S.bfs = function (sx, sy, pass) {
     const d = new Int16Array(COLS * ROWS).fill(-1), par = new Int32Array(COLS * ROWS).fill(-1);
@@ -39,35 +38,86 @@
     return { d, par };
   };
 
+  // A building: the floor is split into rooms and hallways joined by doorways, with furniture for cover.
   S.genMap = function () {
-    const g = [...Array(ROWS)].map(() => Array(COLS).fill(1));
-    // recursive-backtracker maze on odd cells
-    const stack = [[1, 1]]; g[1][1] = 0;
-    while (stack.length) {
-      const [x, y] = stack[stack.length - 1];
-      const opts = shuffle([[2, 0], [-2, 0], [0, 2], [0, -2]]).filter(([dx, dy]) => {
-        const nx = x + dx, ny = y + dy;
-        return nx > 0 && ny > 0 && nx < COLS - 1 && ny < ROWS - 1 && g[ny][nx] === 1;
-      });
-      if (!opts.length) { stack.pop(); continue; }
-      const [dx, dy] = opts[0];
-      g[y + dy / 2][x + dx / 2] = 0; g[y + dy][x + dx] = 0;
-      stack.push([x + dx, y + dy]);
+    for (;;) {
+      const g = buildFloor();
+      const d = S.bfs(2, 2, (x, y) => g[y][x] === 0).d;
+      let ok = true;
+      for (let y = 1; y < ROWS - 1 && ok; y++) for (let x = 1; x < COLS - 1; x++) if (g[y][x] === 0 && d[I(x, y)] < 0) { ok = false; break; }
+      if (ok) return g;
     }
-    // knock out walls to create loops (so players can circle around the entity)
-    for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) {
-      if (g[y][x] !== 1 || Math.random() > 0.14) continue;
-      const h = g[y][x - 1] === 0 && g[y][x + 1] === 0, v = g[y - 1][x] === 0 && g[y + 1][x] === 0;
-      if (h || v) g[y][x] = 0;
-    }
-    // a few open rooms
-    for (let i = 0; i < 7; i++) {
-      const w = 3 + rand(3), h = 3 + rand(3), x0 = 1 + rand(COLS - 2 - w), y0 = 1 + rand(ROWS - 2 - h);
-      for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) g[y][x] = 0;
-    }
-    for (let y = 1; y <= 3; y++) for (let x = 1; x <= 3; x++) g[y][x] = 0; // spawn room
-    return g;
   };
+
+  function buildFloor() {
+    const g = [...Array(ROWS)].map((_, y) => Array(COLS).fill(0).map((_, x) => (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1) ? 1 : 0));
+    const rooms = [];
+
+    // wall line from (x,y) along the axis, with one or two doorways (sometimes double width)
+    function wall(vert, at, from, to) {
+      for (let i = from; i <= to; i++) if (vert) g[i][at] = 1; else g[at][i] = 1;
+      const len = to - from + 1, doors = 1 + (len >= 12 ? 1 : 0) + (len >= 22 && Math.random() < 0.5 ? 1 : 0);
+      for (let k = 0; k < doors; k++) {
+        const seg = Math.floor(len / doors), i = from + k * seg + rand(Math.max(1, seg - 1));
+        const wide = Math.random() < 0.35 && i + 1 <= to;
+        for (const j of wide ? [i, i + 1] : [i]) if (vert) g[j][at] = 0; else g[at][j] = 0;
+      }
+    }
+    // a wall may only end against solid wall, never in front of an existing doorway
+    const fitsV = (wx, y0, y1) => g[y0 - 1][wx] === 1 && g[y1 + 1][wx] === 1;
+    const fitsH = (wy, x0, x1) => g[wy][x0 - 1] === 1 && g[wy][x1 + 1] === 1;
+
+    function split(x0, y0, x1, y1) {
+      const w = x1 - x0 + 1, h = y1 - y0 + 1;
+      const canV = w >= 7, canH = h >= 7;
+      if ((!canV && !canH) || (w * h <= 64 && Math.random() < 0.4)) { rooms.push({ x0, y0, x1, y1 }); return; }
+      const vert = canV && (!canH || (w === h ? Math.random() < 0.5 : w > h));
+      const lo = vert ? x0 : y0, hi = vert ? x1 : y1, fits = vert ? (a => fitsV(a, y0, y1)) : (a => fitsH(a, x0, x1));
+      // long spans sometimes get a 2-wide hallway between two walls
+      if ((hi - lo + 1) >= 15 && Math.random() < 0.45) {
+        const opts = [];
+        for (let a = lo + 3; a <= hi - 6; a++) if (fits(a) && fits(a + 3)) opts.push(a);
+        if (opts.length) {
+          const a = opts[rand(opts.length)];
+          if (vert) { wall(true, a, y0, y1); wall(true, a + 3, y0, y1); split(x0, y0, a - 1, y1); split(a + 4, y0, x1, y1); }
+          else { wall(false, a, x0, x1); wall(false, a + 3, x0, x1); split(x0, y0, x1, a - 1); split(x0, a + 4, x1, y1); }
+          return;
+        }
+      }
+      const opts = [];
+      for (let a = lo + 3; a <= hi - 3; a++) if (fits(a)) opts.push(a);
+      if (!opts.length) { rooms.push({ x0, y0, x1, y1 }); return; }
+      const a = opts[rand(opts.length)];
+      if (vert) { wall(true, a, y0, y1); split(x0, y0, a - 1, y1); split(a + 1, y0, x1, y1); }
+      else { wall(false, a, x0, x1); split(x0, y0, x1, a - 1); split(x0, a + 1, x1, y1); }
+    }
+    split(1, 1, COLS - 2, ROWS - 2);
+
+    // extra doorways so there are loops (so players can circle around the entity)
+    for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) {
+      if (g[y][x] !== 1 || Math.random() > 0.05) continue;
+      const h = g[y][x - 1] === 0 && g[y][x + 1] === 0, v = g[y - 1][x] === 0 && g[y + 1][x] === 0;
+      if (h !== v) g[y][x] = 0;
+    }
+    for (let y = 1; y <= 3; y++) for (let x = 1; x <= 3; x++) g[y][x] = 0; // spawn area
+
+    // furniture: blocks inside bigger rooms, always with a free tile all around so nothing gets cut off
+    for (const r of rooms) {
+      const w = r.x1 - r.x0 + 1, h = r.y1 - r.y0 + 1;
+      if (w < 5 || h < 5) continue;
+      for (let n = Math.floor(w * h / 18), tries = 0; n > 0 && tries < 40; tries++) {
+        const bw = 1 + rand(2), bh = 1 + rand(2);
+        const bx = r.x0 + 1 + rand(w - 1 - bw), by = r.y0 + 1 + rand(h - 1 - bh);
+        if (bx + bw > r.x1 || by + bh > r.y1 || (bx <= 4 && by <= 4)) continue;
+        let free = true;
+        for (let y = by - 1; y <= by + bh && free; y++) for (let x = bx - 1; x <= bx + bw; x++) if (g[y][x] !== 0) { free = false; break; }
+        if (!free) continue;
+        for (let y = by; y < by + bh; y++) for (let x = bx; x < bx + bw; x++) g[y][x] = 1;
+        n--;
+      }
+    }
+    return g;
+  }
 
   // `w` is any object with { grid, gate: { x, y, open } }
   S.solid = function (w, tx, ty) {

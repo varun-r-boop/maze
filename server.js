@@ -14,13 +14,17 @@ const TICK_MS = 50;
 
 // ---------------------------------------------------------------- static files
 const PUB = path.join(__dirname, 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const THREE_DIR = path.join(__dirname, 'node_modules', 'three', 'build');
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.mp3': 'audio/mpeg' };
 const server = http.createServer((req, res) => {
   let p;
   try { p = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { res.writeHead(400); return res.end(); }
   if (p === '/') p = '/index.html';
-  const file = path.join(PUB, path.normalize(p));
-  if (!file.startsWith(PUB + path.sep)) { res.writeHead(403); return res.end(); }
+  // Three.js (for the first- and third-person views) is served straight from node_modules
+  const vendor = p.startsWith('/vendor/three/');
+  const base = vendor ? THREE_DIR : PUB;
+  const file = path.join(base, path.normalize(vendor ? p.slice('/vendor/three'.length) : p));
+  if (!file.startsWith(base + path.sep)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
@@ -372,6 +376,8 @@ function sendSnapshots(r) {
       key: p.key,
       e: !p.escaped && d < TILE * ENTITY_SEEN ? { x: Math.round(E.x), y: Math.round(E.y), stun: E.stun > 0 } : null,
       danger: !p.escaped && E.stun <= 0 ? Math.max(0, 1 - d / (TILE * 7)) : 0,
+      // the entity is hunting YOU and is close behind (path distance in tiles)
+      chase: E.target === p && E.stun <= 0 && E.targetDist <= 12,
     });
   }
 }
