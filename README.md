@@ -1,7 +1,15 @@
 # Keybound
 
-Top-down online co-op escape game for 1–4 players, each on their own device (PC or phone).
+Top-down online co-op escape game for 1–12 players, each on their own device (PC or phone).
 You explore a dark building with a headlight. Walls block your light, so you only see what's in your line of sight.
+
+## Maps
+
+The host picks the map in the lobby:
+
+- **Building:** a single floor of rooms, hallways and doorways, different every game.
+- **Forest:** a forest at night. You start at a campfire; a winding path leads to the way out on the far side. Trees block your way and your light; bushes, rocks, logs and the pond (cross it by the bridge) only block your way. There's an abandoned cabin in the woods.
+- **Apartment (3 floors):** a hallway down each floor with flats on both sides and a stairwell at each end. Walk onto a staircase (▲ up, ▼ down) to change floors. You start on the top floor; the way out is the entrance on the ground floor. Keys can be on any floor, and the entities follow you up and down the stairs.
 
 ## Views
 
@@ -50,4 +58,4 @@ It prints a `https://something.trycloudflare.com` address. Open that address you
 - `public/view3d.js`: the first- and third-person views, drawn with Three.js (served from `node_modules`, so run `npm install`). It only loads when someone picks a 3D view.
 - `public/shared.js`: map generation (rooms, hallways and furniture), pathfinding and collision, used by both sides.
 
-Gameplay settings (speeds, vision radius, lives, safe-zone timer) are at the top of `public/shared.js`.
+Gameplay settings (speeds, vision radius, entities per player, safe-zone timer) are at the top of `public/shared.js`.

@@ -1,5 +1,7 @@
+import { drawApartmentMap, drawDoors2D, doorSwing } from './apartment2d.js';
+import { drawForestMap, drawForestGlow } from './forest2d.js';
 const Sh = window.Shared;
-const { TILE, COLS, ROWS, PLAYER_R, PLAYER_SPEED, SAFE_WARN, TEAM_LIVES, MAX_PLAYERS } = Sh.C;
+const { TILE, COLS, ROWS, PLAYER_R, PLAYER_SPEED, SAFE_WARN, MAX_PLAYERS } = Sh.C;
 const { center, dist } = Sh;
 const COLORS = Sh.COLORS;
 const MINI = 3;
@@ -49,6 +51,23 @@ function setView(mode) {
 function viewPicker() {
   return `<label>Your view</label><div class="seg" id="viewpick">${VIEWS.map(([k, n]) => `<button data-view="${k}" class="${k === viewMode ? 'on' : ''}">${n}</button>`).join('')}</div>`;
 }
+// character: each player picks one; everyone sees each other's choice
+let myChar = store.get('kb-char') === 'roundhead' ? 'roundhead' : 'carrot';
+function charPicker() {
+  return `<label>Your character</label><div class="seg chars">${CHARS.map(([k, n]) => `<button data-char="${k}" class="${k === myChar ? 'on' : ''}"><canvas width="96" height="84"></canvas>${n}</button>`).join('')}</div>`;
+}
+function bindCharPicker() {
+  const color = COLORS[(room.players.find(p => p.id === myId) || { slot: 0 }).slot];
+  panel.querySelectorAll('[data-char]').forEach(b => {
+    const cv = b.querySelector('canvas'), c = cv.getContext('2d');
+    c.setTransform(1.15, 0, 0, 1.15, 48 - 48 * 1.15, 0); drawChar(c, b.dataset.char, 48, 52, color, 1, 0);
+    b.onclick = () => {
+      myChar = b.dataset.char; store.set('kb-char', myChar);
+      panel.querySelectorAll('[data-char]').forEach(x => x.classList.toggle('on', x === b));
+      if (room.code) send({ t: 'char', char: myChar });
+    };
+  });
+}
 function bindViewPicker() {
   panel.querySelectorAll('[data-view]').forEach(b => b.onclick = () => {
     setView(b.dataset.view);
@@ -59,7 +78,7 @@ addEventListener('resize', () => { if (v3d) v3d.resize(W, H, DPR); });
 
 // ---------------------------------------------------------------- networking
 let ws, myId = null, lan = [], ui = 'home', homeError = '';
-const room = { code: null, host: null, players: [], state: null };
+const room = { code: null, host: null, players: [], state: null, map: 'building' };
 let G = null; // current game, client side
 const queue = [];
 
@@ -81,7 +100,7 @@ function onMsg(m) {
       homeError = m.msg; renderHome();
       break;
     case 'lobby':
-      room.host = m.host; room.players = m.players; room.state = m.state;
+      room.host = m.host; room.players = m.players; room.state = m.state; room.map = m.map || 'building';
       if (m.state === 'lobby') { ui = 'lobby'; G = null; renderLobby(); }
       else if (ui === 'ended') renderEnd();
       break;
@@ -89,7 +108,10 @@ function onMsg(m) {
       initGame(m); ui = 'play'; overlay.classList.add('hidden');
       break;
     case 's': if (G) applySnapshot(m); break;
-    case 'tp': if (G) { G.me.x = m.x; G.me.y = m.y; G.tpSeq = m.s; } break;
+    case 'tp': if (G) {
+      G.me.x = m.x; G.me.y = m.y; G.tpSeq = m.s;
+      if (typeof m.a === 'number') { aim = m.a; pitch = 0; G.fade = 1; } // took the stairs: fade, and face out of the stairwell
+    } break;
     case 'msg': if (G) addMsg(m.text, m.color, m.dur); break;
     case 'end':
       if (document.pointerLockElement) document.exitPointerLock();
@@ -109,6 +131,7 @@ function renderHome() {
     <p class="sub">Online co-op escape. Everyone plays on their own device.</p>
     <label for="name">Your name</label>
     <input id="name" maxlength="14" placeholder="Name" value="${esc(store.get('kb-name') || '')}" style="margin-bottom:14px">
+    ${charPicker()}
     ${viewPicker()}
     <div class="cols">
       <div class="card"><h3>Host a game</h3><p>Create a room, then send the invite link to your friends.</p><button class="go" id="host">Host game</button></div>
@@ -121,19 +144,19 @@ function renderHome() {
       <li>Find your key (watch the signal meter), carry it to the <b style="color:#b388ff">gate</b>, then escape once every lock is open.</li>
       <li>It's dark. You only see what your headlight shows, and walls block it. Listen for the heartbeat: the <b style="color:#ff5252">entity</b> is close.</li>
       <li><b style="color:#69f0ae">Safe zones</b> move every 10 seconds. The entity can't touch you inside one. Dashed outlines show where the next ones will appear.</li>
-      <li>Getting caught costs a team life (3 total). You respawn and drop your key where you were caught.</li>
+      <li>There are no lives. Getting caught sends you back to the start and you drop your key where you were caught. Keep going until your whole team escapes.</li>
       <li><b>Top-down, PC:</b> move with WASD or the arrow keys; your headlight points the way you walk. <b>Phone:</b> drag anywhere to move.</li>
       <li><b>First / third person, PC:</b> click the game to look around with the mouse (Esc frees it). W/S walk, A/D step sideways, ←/→ or Q/E turn. <b>Phone:</b> drag up/down to walk, left/right to turn.</li>
       <li>Press <b>V</b> during a game to switch views, and <b>M</b> to turn the music on or off.</li>
     </ul></details>`;
-  bindViewPicker(); bindMusicButton();
+  bindViewPicker(); bindMusicButton(); bindCharPicker();
   const nameEl = document.getElementById('name'), codeEl = document.getElementById('code');
   const name = () => { const n = nameEl.value.trim(); store.set('kb-name', n); return n; };
-  document.getElementById('host').onclick = () => { ensureAudio(); homeError = ''; send({ t: 'create', name: name() }); };
+  document.getElementById('host').onclick = () => { ensureAudio(); homeError = ''; send({ t: 'create', name: name(), char: myChar }); };
   const join = () => {
     ensureAudio();
     if (codeEl.value.trim().length !== 4) { homeError = 'Enter the 4-letter room code.'; return renderHome(); }
-    homeError = ''; send({ t: 'join', code: codeEl.value, name: name() });
+    homeError = ''; send({ t: 'join', code: codeEl.value, name: name(), char: myChar });
   };
   document.getElementById('join').onclick = join;
   codeEl.onkeydown = e => { if (e.key === 'Enter') join(); };
@@ -152,14 +175,17 @@ function renderLobby() {
     <label>Invite link</label>
     ${links.map(l => `<div class="linkrow"><input readonly value="${esc(l)}"><button data-copy="${esc(l)}">Copy</button></div>`).join('')}
     ${local ? `<p class="note">You're playing on <b>localhost</b>, so the link above is your local-network address. It works for friends on the same Wi-Fi. For friends elsewhere, use a tunnel link instead (see README).</p>` : ''}
-    <div style="margin-top:18px">${viewPicker()}</div>
+    <div style="margin-top:18px">${charPicker()}${viewPicker()}
+      <label>Map${isHost ? '' : ' (the host picks)'}</label><div class="seg">${Sh.MAPS.map(([k, n]) => `<button data-map="${k}" class="${k === room.map ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${n}</button>`).join('')}</div>
+    </div>
     <h3>Players (${room.players.length}/${MAX_PLAYERS})</h3>
-    <ul class="plist">${room.players.map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}${p.id === room.host ? '<em>host</em>' : ''}${p.id === myId ? '<em>you</em>' : ''}</li>`).join('')}</ul>
+    <ul class="plist">${room.players.map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}<em>${(CHARS.find(c => c[0] === p.char) || CHARS[0])[1]}</em>${p.id === room.host ? '<em>host</em>' : ''}${p.id === myId ? '<em>you</em>' : ''}</li>`).join('')}</ul>
     ${isHost ? `<button class="go" id="start">Start game</button><p class="note">The gate will need ${room.players.length} key${room.players.length > 1 ? 's' : ''}, one for each player.</p>`
              : `<p class="sub">Waiting for the host to start…</p>`}
     ${musicButton()}`;
   panel.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(b));
-  bindViewPicker(); bindMusicButton();
+  bindViewPicker(); bindMusicButton(); bindCharPicker();
+  if (isHost) panel.querySelectorAll('[data-map]').forEach(b => b.onclick = () => send({ t: 'map', map: b.dataset.map }));
   if (isHost) document.getElementById('start').onclick = () => { ensureAudio(); send({ t: 'start' }); };
 }
 
@@ -200,20 +226,24 @@ function initGame(m) {
   const meInfo = m.players.find(p => p.id === m.you);
   G = {
     grid: m.grid, gate: { ...m.gate, open: false, ins: [] }, n: m.players.length,
+    floors: m.floors || [{ x0: 0, x1: COLS - 1 }], stairs: m.stairs || [], floor: -1,
+    map: m.map || 'building', flights: m.flights || [], rooms: m.rooms || [], furniture: m.furniture || [], doors: m.doors || [], forest: m.forest || null, fade: 0,
     players: new Map(), me: { x: meInfo.x, y: meInfo.y }, slot: meInfo.slot, tpSeq: 0,
-    time: 0, lives: TEAM_LIVES, zt: 10, zones: [], next: [], key: null, ent: null, danger: 0,
+    time: 0, caught: 0, zt: 10, zones: [], next: [], key: null, ents: new Map(), danger: 0,
     msgs: [], lastSent: 0, sentX: null, sentY: null, sentA: null, result: null, walk: 0, moving: false, flicker: 1, flip: 1,
   };
   for (const p of m.players)
-    G.players.set(p.id, { ...p, rx: p.x, ry: p.y, tx: p.x, ty: p.y, ta: Sh.START_YAW, ra: Sh.START_YAW, safe: false, inv: true, esc: false, ks: 'hidden', walk: 0, flip: 1 });
-  aim = Sh.START_YAW; pitch = 0;
+    G.players.set(p.id, { ...p, rx: p.x, ry: p.y, tx: p.x, ty: p.y, ta: m.yaw ?? Sh.START_YAW, ra: m.yaw ?? Sh.START_YAW, safe: false, inv: true, esc: false, ks: 'hidden', walk: 0, flip: 1 });
+  aim = m.yaw ?? Sh.START_YAW; pitch = 0;
+  for (const d of G.doors) d.swing = doorSwing(G, d);
+  G.doorOpen = new Float32Array(G.doors.length);
   renderMaps();
   if (v3d) v3d.build(G);
 }
 
 function applySnapshot(s) {
   G.chase = !!s.chase;
-  G.time = s.time; G.lives = s.lives; G.zt = s.zt; G.zones = s.zones; G.next = s.next;
+  G.time = s.time; G.caught = s.caught; G.zt = s.zt; G.zones = s.zones; G.next = s.next;
   G.gate.open = s.gate.open; G.gate.ins = s.gate.ins; G.key = s.key; G.danger = s.danger;
   const seen = new Set();
   for (const sp of s.players) {
@@ -224,10 +254,14 @@ function applySnapshot(s) {
   }
   for (const id of [...G.players.keys()]) if (!seen.has(id)) G.players.delete(id); // someone left
   G.n = G.players.size;
-  if (s.e) {
-    if (!G.ent) G.ent = { rx: s.e.x, ry: s.e.y };
-    Object.assign(G.ent, { tx: s.e.x, ty: s.e.y, stun: s.e.stun });
-  } else G.ent = null;
+  // the entities near you (each has an id so it moves smoothly between snapshots)
+  const seenE = new Set();
+  for (const e of s.es || []) {
+    seenE.add(e.id);
+    if (!G.ents.has(e.id)) G.ents.set(e.id, { id: e.id, rx: e.x, ry: e.y });
+    Object.assign(G.ents.get(e.id), { tx: e.x, ty: e.y, stun: e.stun });
+  }
+  for (const id of [...G.ents.keys()]) if (!seenE.has(id)) G.ents.delete(id);
 }
 
 function addMsg(text, color = '#fff', dur = 3) { G.msgs.push({ text, color, t: dur }); if (G.msgs.length > 3) G.msgs.shift(); }
@@ -344,8 +378,17 @@ function update(dt) {
     const c = Math.cos(p.ta); if (Math.abs(c) > 0.3) p.flip = c < 0 ? -1 : 1; // walking straight up/down keeps their last side
     p.walk = moving ? p.walk + dt * 12 : 0;
   }
-  if (G.ent) { G.ent.rx += (G.ent.tx - G.ent.rx) * k; G.ent.ry += (G.ent.ty - G.ent.ry) * k; }
+  for (const e of G.ents.values()) { e.rx += (e.tx - e.rx) * k; e.ry += (e.ty - e.ry) * k; }
   // the headlight flickers when the entity is close
+  G.fade = Math.max(0, G.fade - dt * 2.2);
+  // doors swing open when anyone (you, a teammate, or an entity you can see) comes close, and fall shut after
+  if (G.doors.length) {
+    const near = [G.me, ...[...G.players.values()].filter(p => !p.esc).map(p => ({ x: p.rx, y: p.ry })), ...[...G.ents.values()].map(e => ({ x: e.rx, y: e.ry }))];
+    G.doors.forEach((d, i) => {
+      const cx = center(d.x), cy = center(d.y), want = near.some(o => Math.abs(o.x - cx) < TILE * 1.3 && Math.abs(o.y - cy) < TILE * 1.3) ? 1 : 0;
+      G.doorOpen[i] += (want - G.doorOpen[i]) * Math.min(1, dt * (want ? 6 : 2.5));
+    });
+  }
   G.flicker = G.danger > 0.4 && Math.random() < G.danger * 0.2 ? 0.35 : 1;
   heartbeat();
   const chasing = G.chase && ui === 'play';
@@ -358,6 +401,10 @@ function update(dt) {
 
   const meP = G.players.get(myId);
   G.moving = false;
+  if (G.floors.length > 1) {
+    const f = Sh.floorOf(G.floors, G.me.x);
+    if (f !== G.floor) { if (G.floor >= 0) addMsg(`Floor ${f + 1}`, '#ffe9a8', 1.5); G.floor = f; }
+  }
   if (ui !== 'play' || !meP || meP.esc) return;
   let mx, my;
   if (viewMode === 'top') {
@@ -414,7 +461,7 @@ function castRay(ox, oy, ang, maxD) {
     let t;
     if (nx < ny) { t = nx; nx += ddx; tx += sx; } else { t = ny; ny += ddy; ty += sy; }
     if (t >= maxD) return maxD;
-    if (Sh.solid(G, tx, ty)) return t;
+    if (Sh.blocksLight(G, tx, ty)) return t;
   }
 }
 const hasLOS = (a, b) => { const d = dist(a, b); return castRay(a.x, a.y, Math.atan2(b.y - a.y, b.x - a.x), d) >= d - 1; };
@@ -447,7 +494,9 @@ function renderMaps() {
   mapCanvas.width = COLS * TILE; mapCanvas.height = ROWS * TILE;
   const m = mapCanvas.getContext('2d');
   const FACE = 14; // visible front face of walls, for a bit of depth
-  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+  if (G.map === 'apartment') drawApartmentMap(m, G);
+  else if (G.map === 'forest') drawForestMap(m, G);
+  else for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
     const px = x * TILE, py = y * TILE;
     if (G.grid[y][x] === 0) {
       m.fillStyle = (x + y) % 2 ? '#2b2a38' : '#2e2d3c'; m.fillRect(px, py, TILE, TILE);
@@ -470,12 +519,27 @@ function renderMaps() {
       }
     }
   }
+  // staircases: steps, with an arrow for up or down (the apartment draws its own flights)
+  if (G.map !== 'apartment') for (const s of G.stairs) {
+    const px = s.x * TILE, py = s.y * TILE;
+    for (let i = 0; i < 5; i++) {
+      const k = s.up ? 0.55 + i * 0.12 : 1 - i * 0.16;
+      m.fillStyle = shade('#6a6488', k); m.fillRect(px + 3, py + 3 + i * 7, TILE - 6, 6);
+    }
+    m.fillStyle = s.up ? '#ffe9a8' : '#b9b5d6'; m.font = 'bold 16px system-ui'; m.textAlign = 'center'; m.textBaseline = 'middle';
+    m.fillText(s.up ? '▲' : '▼', px + TILE / 2, py + TILE / 2);
+  }
   miniCanvas = document.createElement('canvas');
   miniCanvas.width = COLS * MINI; miniCanvas.height = ROWS * MINI;
   const n = miniCanvas.getContext('2d');
   n.fillStyle = '#0e0e18'; n.fillRect(0, 0, miniCanvas.width, miniCanvas.height);
   n.fillStyle = '#3a3654';
   for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (G.grid[y][x] === 1) n.fillRect(x * MINI, y * MINI, MINI, MINI);
+  if (G.forest) { n.fillStyle = '#1f3a24'; for (const t of G.forest.trees) n.fillRect(t.x * MINI, t.y * MINI, MINI, MINI); } // trees
+  n.fillStyle = '#ffe9a8';
+  for (const s of G.stairs) n.fillRect(s.x * MINI, s.y * MINI, MINI, MINI);
+  n.fillStyle = 'rgba(255,233,168,.45)';
+  for (const f of G.flights) n.fillRect(f.x * MINI, f.y0 * MINI, MINI, (f.y1 - f.y0 + 1) * MINI);
 }
 
 // ---------------------------------------------------------------- sprites
@@ -487,7 +551,7 @@ function roundRect(c, x, y, w, h, r) {
 // the carrot man: an orange carrot body tapering to a point, leafy green top that sways as he walks,
 // a face on the side he faces, stubby arms and legs, a scarf and headlamp strap in the player's color.
 // `flip` is -1 facing left, 1 facing right.
-function drawCarrot(x, y, color, flip, walk, alpha = 1) {
+function drawCarrot(ctx, x, y, color, flip, walk, alpha = 1) {
   const s = Math.sin(walk) * 2.5, bob = walk ? Math.abs(Math.cos(walk)) * 1.5 : 0, sway = Math.sin(walk * 0.5) * 0.15;
   ctx.save(); ctx.translate(x, y); ctx.globalAlpha = alpha;
   ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(0, 15, 11, 4, 0, 0, Math.PI * 2); ctx.fill();
@@ -547,6 +611,73 @@ function drawCarrot(x, y, color, flip, walk, alpha = 1) {
   ctx.restore();
 }
 
+// the roundhead: a huge round, bristly dark head on a pale, muscular bare torso, dark trousers,
+// a belt and headlamp strap in the player's color. `flip` is -1 facing left, 1 facing right.
+function drawRoundhead(ctx, x, y, color, flip, walk, alpha = 1) {
+  const s = Math.sin(walk) * 2.5, bob = walk ? Math.abs(Math.cos(walk)) * 1.5 : 0;
+  const ink = '#141016', skin = '#d3cbcf', skinDark = '#a59ca3';
+  ctx.save(); ctx.translate(x, y); ctx.globalAlpha = alpha;
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.ellipse(0, 15, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.scale(flip * 1.25, 1.25); ctx.translate(0, -bob - 3);
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  // legs in dark trousers
+  ctx.strokeStyle = '#2a2731'; ctx.lineWidth = 4.5;
+  ctx.beginPath(); ctx.moveTo(-3.5, 4); ctx.lineTo(-4 + s, 12.5); ctx.moveTo(3.5, 4); ctx.lineTo(4 - s, 12.5); ctx.stroke();
+  ctx.fillStyle = '#18161c'; ctx.strokeStyle = ink; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.ellipse(-3 + s, 14, 3.6, 2, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(5 - s, 14, 3.6, 2, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  // back arm (behind the body)
+  ctx.strokeStyle = skinDark; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(-9, -6); ctx.lineTo(-11.5 - s * 0.6, 4); ctx.stroke();
+  // torso: broad shoulders tapering to the waist
+  ctx.fillStyle = skin; ctx.strokeStyle = ink; ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(-11, -8); ctx.quadraticCurveTo(0, -11, 11, -8);
+  ctx.quadraticCurveTo(10, -1, 7, 5); ctx.lineTo(-7, 5);
+  ctx.quadraticCurveTo(-10, -1, -11, -8);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  // chest and abs
+  ctx.strokeStyle = 'rgba(60,45,55,.65)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-8, -4.5); ctx.quadraticCurveTo(-4, -2, 0, -4.5); ctx.quadraticCurveTo(4, -2, 8, -4.5);
+  ctx.moveTo(0, -4); ctx.lineTo(0, 4);
+  for (const ay of [-0.5, 1.8]) { ctx.moveTo(-3.5, ay); ctx.lineTo(-0.8, ay + 0.4); ctx.moveTo(0.8, ay + 0.4); ctx.lineTo(3.5, ay); }
+  ctx.stroke();
+  // belt in the player's color
+  ctx.fillStyle = color; ctx.strokeStyle = ink; ctx.lineWidth = 1.2;
+  ctx.fillRect(-7.5, 3.5, 15, 3); ctx.strokeRect(-7.5, 3.5, 15, 3);
+  // front arm
+  ctx.strokeStyle = ink; ctx.lineWidth = 5.6;
+  ctx.beginPath(); ctx.moveTo(9, -6); ctx.lineTo(11.5 + s * 0.6, 4); ctx.stroke();
+  ctx.strokeStyle = skin; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(9, -6); ctx.lineTo(11.5 + s * 0.6, 4); ctx.stroke();
+  // the big round head, covered in short bristles
+  ctx.fillStyle = '#3e3a40'; ctx.strokeStyle = ink; ctx.lineWidth = 1.8;
+  ctx.beginPath(); ctx.arc(0, -20, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(20,16,22,.75)'; ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  for (let i = 0; i < 26; i++) {
+    const a = i * 2.39996, r = 2 + (i * 37 % 9);
+    const hx = Math.cos(a) * r, hy = -20 + Math.sin(a) * r;
+    ctx.moveTo(hx, hy); ctx.lineTo(hx + Math.cos(a + 0.5) * 2.2, hy + Math.sin(a + 0.5) * 2.2);
+  }
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.beginPath(); ctx.ellipse(-4, -26, 5, 3, -0.5, 0, Math.PI * 2); ctx.fill();
+  // small pale eyes on the side he faces
+  ctx.fillStyle = '#e9e4e8';
+  ctx.beginPath(); ctx.arc(5, -19, 1.4, 0, Math.PI * 2); ctx.arc(9, -19, 1.4, 0, Math.PI * 2); ctx.fill();
+  // headlamp on a strap in the player's color
+  ctx.strokeStyle = color; ctx.lineWidth = 2.2;
+  ctx.beginPath(); ctx.arc(0, -20, 12, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke();
+  ctx.fillStyle = '#5a5470'; ctx.strokeStyle = ink; ctx.lineWidth = 1.5; roundRect(ctx, 8.5, -28.5, 5, 5, 1.5); ctx.fill(); ctx.stroke();
+  ctx.shadowColor = '#ffe9a8'; ctx.shadowBlur = 8;
+  ctx.fillStyle = '#fff3c4'; ctx.beginPath(); ctx.arc(13.5, -26, 2.2, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+const CHARS = [['carrot', 'Carrot'], ['roundhead', 'Roundhead']];
+const drawChar = (c, ch, ...a) => (ch === 'roundhead' ? drawRoundhead : drawCarrot)(c, ...a);
+
 function drawKey(x, y, color, t, s = 1) {
   ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(t * 2) * 0.25); ctx.scale(s, s);
   ctx.shadowColor = color; ctx.shadowBlur = 14;
@@ -560,6 +691,7 @@ function drawKey(x, y, color, t, s = 1) {
 }
 
 function drawEntityBody(e, t) {
+  t += e.id * 1.7; // each entity writhes on its own rhythm
   ctx.save();
   ctx.globalAlpha = e.stun ? 0.5 : 1;
   const g = ctx.createRadialGradient(e.rx, e.ry, 4, e.rx, e.ry, 38);
@@ -573,6 +705,7 @@ function drawEntityBody(e, t) {
   ctx.restore();
 }
 function drawEntityEyes(e, t) {
+  t += e.id * 1.7;
   ctx.save(); ctx.shadowColor = '#ff1744'; ctx.shadowBlur = 12; ctx.fillStyle = '#ff1744';
   const blink = Math.sin(t * 0.9) > 0.97 ? 0.3 : 1;
   ctx.beginPath(); ctx.ellipse(e.rx - 5, e.ry - 6, 2.6, 2.6 * blink, 0, 0, Math.PI * 2); ctx.ellipse(e.rx + 5, e.ry - 6, 2.6, 2.6 * blink, 0, 0, Math.PI * 2); ctx.fill();
@@ -610,9 +743,11 @@ function drawGate(t) {
   if (!g.open) {
     const slots = [...G.players.values()].map(p => p.slot).sort();
     slots.forEach((slot, i) => { // one lock per player
-      const sx = x + TILE / 2 + (i - (slots.length - 1) / 2) * 9, sy = y + TILE / 2;
+      const perRow = Math.min(4, slots.length), rows = Math.ceil(slots.length / perRow);
+      const inRow = Math.min(perRow, slots.length - Math.floor(i / perRow) * perRow);
+      const sx = x + TILE / 2 + (i % perRow - (inRow - 1) / 2) * 9, sy = y + TILE / 2 + (Math.floor(i / perRow) - (rows - 1) / 2) * 9;
       ctx.fillStyle = g.ins.includes(slot) ? COLORS[slot] : '#1a1030';
-      ctx.beginPath(); ctx.arc(sx, sy, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(sx, sy, slots.length > 4 ? 3 : 3.5, 0, Math.PI * 2); ctx.fill();
     });
   } else {
     ctx.fillStyle = `rgba(255,255,255,${0.45 + 0.3 * Math.sin(t * 6)})`;
@@ -644,22 +779,21 @@ function draw3D(t) {
   for (const [id, p] of G.players) {
     if (p.esc) continue;
     const self = id === myId;
-    players.set(id, self ? { x: G.me.x, y: G.me.y, a: aim, walk: G.walk, inv: p.inv, ks: p.ks, show: true }
-                         : { x: p.rx, y: p.ry, a: p.ra, walk: p.walk, inv: p.inv, ks: p.ks, show: true });
+    const pos = self ? { x: G.me.x, y: G.me.y } : { x: p.rx, y: p.ry };
+    players.set(id, { ...pos, a: self ? aim : p.ra, walk: self ? G.walk : p.walk, inv: p.inv, ks: p.ks, show: true, h: Sh.stairHeight(G.flights, pos.x, pos.y) });
   }
   let key = null;
   if (G.key && G.key.state === 'hidden') { // only YOUR key
     const kp = { x: center(G.key.x), y: center(G.key.y) };
     if (isLit(view, kp)) key = kp;
   }
-  let ent = null;
-  if (G.ent) {
-    const ep = { x: G.ent.rx, y: G.ent.ry }, lit = isLit(view, ep);
-    ent = { ...ep, stun: !!G.ent.stun, lit, eyes: lit || hasLOS(view, ep) };
-  }
+  const ents = [...G.ents.values()].map(e => {
+    const ep = { x: e.rx, y: e.ry }, lit = isLit(view, ep);
+    return { ...ep, id: e.id, stun: !!e.stun, lit, eyes: lit || hasLOS(view, ep), h: Sh.stairHeight(G.flights, ep.x, ep.y) };
+  });
   v3d.render({
-    G, view, t, mode: viewMode, players, key, ent,
-    pitch: mine ? pitch : 0, flicker: mine ? G.flicker : 1, walk: mine ? G.walk : 0,
+    G, view, t, mode: viewMode, players, key, ents,
+    pitch: mine ? pitch : 0, flicker: mine ? G.flicker : 1, walk: mine ? G.walk : 0, viewH: Sh.stairHeight(G.flights, view.x, view.y),
     backRoom: castRay(view.x, view.y, view.a + Math.PI, 2.2 * TILE), // room behind you for the third-person camera
   });
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cvs.width, cvs.height);
@@ -674,6 +808,7 @@ function drawWorld(t) {
   T(ctx, 1);
   ctx.drawImage(mapCanvas, 0, 0);
   drawZones(t, false);
+  if (G.doors.length) drawDoors2D(ctx, G);
   drawGate(t);
 
   // things you can only see while they're in your light
@@ -681,7 +816,7 @@ function drawWorld(t) {
     const kp = { x: center(G.key.x), y: center(G.key.y) };
     if (isLit(view, kp)) drawKey(kp.x, kp.y, COLORS[G.slot], t);
   }
-  const E = G.ent, entLit = E && isLit(view, { x: E.rx, y: E.ry });
+  const ents = [...G.ents.values()].map(e => ({ e, lit: isLit(view, { x: e.rx, y: e.ry }) }));
   // sort by y so characters lower on screen draw in front
   const actors = [];
   for (const [id, p] of G.players) {
@@ -691,12 +826,12 @@ function drawWorld(t) {
     if (!self && id !== view.id && !isLit(view, pos)) continue;
     actors.push({ y: pos.y, draw: () => {
       const blinkOff = p.inv && Math.floor(t * 10) % 2;
-      drawCarrot(pos.x, pos.y, COLORS[p.slot], self ? G.flip : p.flip, self ? G.walk : p.walk, blinkOff ? 0.4 : 1);
+      drawChar(ctx, p.char, pos.x, pos.y, COLORS[p.slot], self ? G.flip : p.flip, self ? G.walk : p.walk, blinkOff ? 0.4 : 1);
       if (p.ks === 'carried') drawKey(pos.x + 20, pos.y - 28, COLORS[p.slot], t, 0.6);
       if (p.safe) { ctx.strokeStyle = '#69f0ae'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(pos.x, pos.y + 15, 16, 6, 0, 0, Math.PI * 2); ctx.stroke(); }
     } });
   }
-  if (entLit) actors.push({ y: E.ry, draw: () => drawEntityBody(E, t) });
+  for (const { e, lit } of ents) if (lit) actors.push({ y: e.ry, draw: () => drawEntityBody(e, t) });
   actors.sort((a, b) => a.y - b.y).forEach(a => a.draw());
 
   // darkness: everything outside your light. Walls block the light.
@@ -725,6 +860,7 @@ function drawWorld(t) {
   fillPoly(ctx, cone, warm);
   ctx.restore();
 
+  if (G.forest) drawForestGlow(ctx, G, t); // the campfire and fireflies glow through the dark
   // visible through the dark: safe-zone outlines, the gate, teammates' markers, and the entity's eyes
   drawZones(t, true);
   drawGate(t);
@@ -734,7 +870,13 @@ function drawWorld(t) {
     if (!self) { ctx.strokeStyle = COLORS[p.slot]; ctx.globalAlpha = 0.6; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
     nameTag(p.name, x, y - 46, self ? '#fff' : COLORS[p.slot]);
   }
-  if (E && (entLit || hasLOS(view, { x: E.rx, y: E.ry }))) drawEntityEyes(E, t); // glowing eyes in the dark
+  for (const { e, lit } of ents) if (lit || hasLOS(view, { x: e.rx, y: e.ry })) drawEntityEyes(e, t); // glowing eyes in the dark
+  if (G.floors.length > 1) { // other floors are out of sight: black out everything beyond this floor's walls
+    const f = G.floors[Sh.floorOf(G.floors, view.x)];
+    ctx.beginPath(); ctx.rect(-1e4, -1e4, 2e4 + COLS * TILE, 2e4 + ROWS * TILE);
+    ctx.rect((f.x0 - 1) * TILE, 0, (f.x1 - f.x0 + 3) * TILE, ROWS * TILE);
+    ctx.fillStyle = '#07070d'; ctx.fill('evenodd');
+  }
   return view;
 }
 
@@ -764,6 +906,13 @@ function drawMinimap(x, y, t) {
     ctx.restore();
   }
   ctx.strokeStyle = '#2c2a40'; ctx.lineWidth = 1; ctx.strokeRect(0, 0, COLS * MINI, ROWS * MINI);
+  if (G.floors.length > 1) { // floor labels under the minimap; yours is highlighted
+    ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    G.floors.forEach((f, i) => {
+      ctx.fillStyle = i === G.floor ? '#ffe9a8' : '#6d6a85';
+      ctx.fillText(`${i + 1}F`, (f.x0 + f.x1 + 1) / 2 * MINI, ROWS * MINI + 3);
+    });
+  }
   ctx.restore();
 }
 
@@ -802,6 +951,7 @@ function drawHud(t) {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   const meP = G.players.get(myId);
   if (!meP) return;
+  if (G.fade > 0) { ctx.fillStyle = `rgba(0,0,0,${Math.min(1, G.fade * 1.3)})`; ctx.fillRect(0, 0, W, H); } // taking the stairs
   if (G.danger > 0) { // red pulsing vignette
     const k = G.danger, pulse = 0.6 + 0.4 * Math.sin(t * (5 + 9 * k));
     const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.7);
@@ -825,8 +975,8 @@ function drawHud(t) {
   ctx.strokeStyle = '#2c2a40'; ctx.lineWidth = 1; ctx.stroke();
   ctx.font = `bold ${W < 480 ? 12 : 14}px system-ui`; ctx.textBaseline = 'middle';
   const cy = 24, cols = [bx + bw * 0.12, bx + bw * 0.36, bx + bw * 0.64, bx + bw * 0.88];
-  const lives = Math.max(0, G.lives);
-  ctx.fillStyle = '#ff5252'; ctx.fillText('♥'.repeat(lives) + '♡'.repeat(TEAM_LIVES - lives), cols[0], cy);
+  ctx.fillStyle = '#ff5252';
+  ctx.fillText(`Caught ${G.caught}×`, cols[0], cy); // how many times the team has been caught
   ctx.fillStyle = G.gate.open ? '#ffd54f' : '#b388ff'; ctx.fillText(G.gate.open ? 'GATE OPEN' : `Gate ${G.gate.ins.length}/${G.n}`, cols[1], cy);
   ctx.fillStyle = G.zt < SAFE_WARN ? (Math.sin(t * 14) > 0 ? '#69f0ae' : '#fff') : '#69f0ae';
   ctx.fillText(`Zones move in ${Math.ceil(G.zt)}s`, cols[2], cy);
@@ -858,15 +1008,16 @@ function drawHud(t) {
 // ---------------------------------------------------------------- loop
 let last = performance.now();
 function frame(now) {
+  requestAnimationFrame(frame); // first, so one bad frame can never stop the game loop
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   const t = now / 1000;
   update(dt);
+  if (!W || !H) return; // minimized or zero-size window: nothing to draw
   if (G && G.players.get(myId)) {
     if (viewMode !== 'top' && v3d && v3d.ready) draw3D(t); else drawWorld(t); // top-down until the 3D view has loaded
     drawHud(t);
   }
   else { ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = '#07070d'; ctx.fillRect(0, 0, W, H); }
-  requestAnimationFrame(frame);
 }
 setView(viewMode);
 connect();

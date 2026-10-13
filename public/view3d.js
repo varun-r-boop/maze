@@ -1,6 +1,8 @@
 // First- and third-person 3D views (Three.js). Loaded only when a player picks one of them.
 // Map space (px, y down) maps to 3D as x = px / TILE, z = py / TILE; one tile is one unit, y is up.
 import * as THREE from 'three';
+import { buildApartment, updateApartment } from './apartment3d.js';
+import { buildForest, updateForest } from './forest3d.js';
 
 const Sh = window.Shared;
 const { TILE, COLS, ROWS } = Sh.C;
@@ -52,7 +54,66 @@ function makeCarrot(color) {
     const foot = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), std('#3b2a20')); foot.scale.set(1.4, 0.6, 1); foot.position.set(0.02, -0.145, 0); l.add(foot);
     g.add(l); return l;
   });
-  g.userData = { body, legs };
+  g.userData = { body, legs, eye: EYE };
+  return g;
+}
+
+// the roundhead, facing +x: a huge bristly round head on a pale muscular torso, dark trousers,
+// belt and headlamp strap in the player's color
+let headTex = null, chestTex = null;
+function makeRoundhead(color) {
+  headTex = headTex || canvasTex(256, (x, n) => {
+    x.fillStyle = '#625c68'; x.fillRect(0, 0, n, n);
+    x.strokeStyle = 'rgba(18,14,22,.8)'; x.lineWidth = 2;
+    for (let i = 0; i < 900; i++) { // short bristles
+      const px = (i * 97.13) % n, py = (i * 57.71) % n, a = (i * 2.4) % 6.28;
+      x.beginPath(); x.moveTo(px, py); x.lineTo(px + Math.cos(a) * 7, py + Math.sin(a) * 7); x.stroke();
+    }
+  });
+  chestTex = chestTex || canvasTex(256, (x, n) => {
+    x.fillStyle = '#d6ced2'; x.fillRect(0, 0, n, n);
+    x.strokeStyle = 'rgba(70,52,64,.75)'; x.lineWidth = 3; x.lineCap = 'round';
+    const cx = n * 0.25, w = n * 0.11; // the front (+x) of a cylinder's texture is a quarter of the way along
+    x.beginPath();
+    x.moveTo(cx - w * 1.6, 70); x.quadraticCurveTo(cx - w * 0.8, 100, cx, 78); x.quadraticCurveTo(cx + w * 0.8, 100, cx + w * 1.6, 70);
+    x.moveTo(cx, 80); x.lineTo(cx, 220);
+    for (const y of [130, 165, 200]) { x.moveTo(cx - w, y - 4); x.lineTo(cx - 6, y); x.moveTo(cx + 6, y); x.lineTo(cx + w, y - 4); }
+    x.stroke();
+  });
+  const g = new THREE.Group(), body = new THREE.Group();
+  g.add(body);
+  const skin = std('#ffffff', { map: chestTex }), limb = std('#d3cbcf'), cloth = std('#2a2731');
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.14, 0.36, 18), skin);
+  torso.position.y = 0.52; torso.scale.z = 1.25; body.add(torso);
+  const shoulders = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), limb);
+  shoulders.position.y = 0.69; shoulders.scale.set(1, 0.3, 1.25); body.add(shoulders);
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.08, 10), limb); neck.position.y = 0.74; body.add(neck);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 24, 18), std('#ffffff', { map: headTex, roughness: 1 }));
+  head.position.y = 0.94; body.add(head);
+  for (const z of [-0.07, 0.07]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), glow('#e9e4e8'));
+    eye.position.set(0.195, 0.95, z); body.add(eye);
+  }
+  const strap = new THREE.Mesh(new THREE.TorusGeometry(0.205, 0.016, 6, 24), std(color));
+  strap.rotation.x = Math.PI / 2; strap.position.y = 1.0; body.add(strap);
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.04, 10, 8), glow('#fff3c4'));
+  lamp.position.set(0.21, 1.0, 0); body.add(lamp);
+  const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.05, 18), std(color));
+  belt.position.y = 0.35; belt.scale.z = 1.25; body.add(belt);
+  const hips = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.13, 0.08, 14), cloth);
+  hips.position.y = 0.3; hips.scale.z = 1.25; body.add(hips);
+  const limbGroup = (y, z, len, r, mat) => {
+    const l = new THREE.Group(); l.position.set(0, y, z);
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 0.85, len, 8), mat); m.position.y = -len / 2; l.add(m);
+    return l;
+  };
+  const legs = [-0.08, 0.08].map(z => {
+    const l = limbGroup(0.3, z, 0.27, 0.05, cloth);
+    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), std('#18161c')); foot.scale.set(1.5, 0.6, 1); foot.position.set(0.03, -0.28, 0); l.add(foot);
+    g.add(l); return l;
+  });
+  const arms = [-0.25, 0.25].map(z => { const a = limbGroup(0.67, z, 0.32, 0.045, limb); body.add(a); return a; });
+  g.userData = { body, legs, arms, eye: 0.94 };
   return g;
 }
 
@@ -92,44 +153,74 @@ export function createView3D(canvas) {
       for (const m of [].concat(o.material || [])) { if (m.map) m.map.dispose(); m.dispose(); }
       if (o.shadow && o.shadow.map) o.shadow.map.dispose();
     });
+    headTex = chestTex = null; // shared character textures were freed with the old scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color('#050509');
     scene.fog = new THREE.Fog('#050509', 3, R_FAR + 1.5);
     scene.add(new THREE.AmbientLight('#8a86b8', 0.22));
 
-    // floor, ceiling and walls
-    const floorTex = canvasTex(128, (x, n) => {
-      x.fillStyle = '#6e6a86'; x.fillRect(0, 0, n, n);
-      x.fillStyle = '#625e78'; x.fillRect(0, 0, n / 2, n / 2); x.fillRect(n / 2, n / 2, n / 2, n / 2);
-      x.strokeStyle = '#3e3b50'; x.lineWidth = 3; x.strokeRect(0, 0, n / 2, n / 2); x.strokeRect(n / 2, n / 2, n / 2, n / 2); x.strokeRect(n / 2, 0, n / 2, n / 2); x.strokeRect(0, n / 2, n / 2, n / 2);
-    }, COLS / 2, ROWS / 2);
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(COLS, ROWS), std('#ffffff', { map: floorTex }));
-    floor.rotation.x = -Math.PI / 2; floor.position.set(COLS / 2, 0, ROWS / 2); floor.receiveShadow = true;
-    scene.add(floor);
-    const ceil = new THREE.Mesh(new THREE.PlaneGeometry(COLS, ROWS), std('#26243a'));
-    ceil.rotation.x = Math.PI / 2; ceil.position.set(COLS / 2, WALL_H, ROWS / 2);
-    scene.add(ceil);
+    // the apartment has its own look (rooms, furniture, doors, real stairs); otherwise the default building
+    let apt = null, forest = null;
+    if (G.map === 'apartment') apt = buildApartment(scene, G, WALL_H);
+    else if (G.map === 'forest') forest = buildForest(scene, G, WALL_H);
+    else {
+      // floor, ceiling and walls
+      const floorTex = canvasTex(128, (x, n) => {
+        x.fillStyle = '#6e6a86'; x.fillRect(0, 0, n, n);
+        x.fillStyle = '#625e78'; x.fillRect(0, 0, n / 2, n / 2); x.fillRect(n / 2, n / 2, n / 2, n / 2);
+        x.strokeStyle = '#3e3b50'; x.lineWidth = 3; x.strokeRect(0, 0, n / 2, n / 2); x.strokeRect(n / 2, n / 2, n / 2, n / 2); x.strokeRect(n / 2, 0, n / 2, n / 2); x.strokeRect(0, n / 2, n / 2, n / 2);
+      }, COLS / 2, ROWS / 2);
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(COLS, ROWS), std('#ffffff', { map: floorTex }));
+      floor.rotation.x = -Math.PI / 2; floor.position.set(COLS / 2, 0, ROWS / 2); floor.receiveShadow = true;
+      scene.add(floor);
+      const ceil = new THREE.Mesh(new THREE.PlaneGeometry(COLS, ROWS), std('#26243a'));
+      ceil.rotation.x = Math.PI / 2; ceil.position.set(COLS / 2, WALL_H, ROWS / 2);
+      scene.add(ceil);
 
-    const wallTex = canvasTex(128, (x, n) => {
-      x.fillStyle = '#4a4560'; x.fillRect(0, 0, n, n);
-      const rows = 6, h = n / rows;
-      for (let r = 0; r < rows; r++) {
-        const off = r % 2 ? n / 4 : 0;
-        for (let b = -1; b < 2; b++) {
-          const shadeK = 0.85 + ((r * 7 + b * 3) % 5) * 0.05;
-          x.fillStyle = `rgb(${Math.round(104 * shadeK)},${Math.round(97 * shadeK)},${Math.round(140 * shadeK)})`;
-          x.fillRect(off + b * n / 2 + 3, r * h + 3, n / 2 - 6, h - 6);
+      const wallTex = canvasTex(128, (x, n) => {
+        x.fillStyle = '#4a4560'; x.fillRect(0, 0, n, n);
+        const rows = 6, h = n / rows;
+        for (let r = 0; r < rows; r++) {
+          const off = r % 2 ? n / 4 : 0;
+          for (let b = -1; b < 2; b++) {
+            const shadeK = 0.85 + ((r * 7 + b * 3) % 5) * 0.05;
+            x.fillStyle = `rgb(${Math.round(104 * shadeK)},${Math.round(97 * shadeK)},${Math.round(140 * shadeK)})`;
+            x.fillRect(off + b * n / 2 + 3, r * h + 3, n / 2 - 6, h - 6);
+          }
+        }
+      }, 1, WALL_H);
+      const tiles = [];
+      for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++)
+        if (G.grid[y][x] === 1 && !(x === G.gate.x && y === G.gate.y)) tiles.push([x, y]);
+      const walls = new THREE.InstancedMesh(new THREE.BoxGeometry(1, WALL_H, 1), std('#ffffff', { map: wallTex }), tiles.length);
+      const m = new THREE.Matrix4();
+      tiles.forEach(([x, y], i) => walls.setMatrixAt(i, m.makeTranslation(x + 0.5, WALL_H / 2, y + 0.5)));
+      walls.castShadow = walls.receiveShadow = true;
+      scene.add(walls);
+
+      // staircases: up = steps climbing to the ceiling against the wall, down = steps sinking into a dark stairwell
+      const stepMat = std('#7a7494'), pitMat = glow('#050508');
+      for (const s of G.stairs) {
+        const wallDir = G.grid[s.y - 1] && G.grid[s.y - 1][s.x] === 1 ? -1 : 1; // which side the wall is on
+        const n = 6, depth = 1 / n;
+        if (s.up) {
+          for (let i = 0; i < n; i++) {
+            const h = WALL_H * (i + 1) / n;
+            const step = new THREE.Mesh(new THREE.BoxGeometry(0.96, h, depth), stepMat);
+            step.position.set(s.x + 0.5, h / 2, s.y + 0.5 - wallDir * (0.5 - depth / 2) + wallDir * i * depth);
+            step.castShadow = step.receiveShadow = true; scene.add(step);
+          }
+        } else {
+          const pit = new THREE.Mesh(new THREE.PlaneGeometry(0.96, 0.96).rotateX(-Math.PI / 2), pitMat);
+          pit.position.set(s.x + 0.5, 0.005, s.y + 0.5); scene.add(pit);
+          for (let i = 0; i < 3; i++) { // the top few steps going down, fading into the dark
+            const step = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.02, depth * 0.9), std(['#5a5570', '#3a3650', '#24212f'][i]));
+            step.position.set(s.x + 0.5, 0.012, s.y + 0.5 - wallDir * (0.5 - depth / 2) + wallDir * i * depth); scene.add(step);
+          }
         }
       }
-    }, 1, WALL_H);
-    const tiles = [];
-    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++)
-      if (G.grid[y][x] === 1 && !(x === G.gate.x && y === G.gate.y)) tiles.push([x, y]);
-    const walls = new THREE.InstancedMesh(new THREE.BoxGeometry(1, WALL_H, 1), std('#ffffff', { map: wallTex }), tiles.length);
-    const m = new THREE.Matrix4();
-    tiles.forEach(([x, y], i) => walls.setMatrixAt(i, m.makeTranslation(x + 0.5, WALL_H / 2, y + 0.5)));
-    walls.castShadow = walls.receiveShadow = true;
-    scene.add(walls);
+
+    }
 
     // the gate, with one lock light per player on the side facing in
     const gate = new THREE.Group();
@@ -139,8 +230,10 @@ export function createView3D(canvas) {
     const nx = G.gate.ix - G.gate.x, nz = G.gate.iy - G.gate.y;
     const locks = [...G.players.values()].map(p => p.slot).sort().map((slot, i, all) => {
       const l = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), glow('#1a1030'));
-      const along = (i - (all.length - 1) / 2) * 0.2;
-      l.position.set(nx * 0.52 + nz * along, 0.75, nz * 0.52 + nx * along); l.userData.slot = slot;
+      const perRow = Math.min(4, all.length), rows = Math.ceil(all.length / perRow), row = Math.floor(i / perRow);
+      const inRow = Math.min(perRow, all.length - row * perRow);
+      const along = (i % perRow - (inRow - 1) / 2) * 0.2, up = 0.75 - (row - (rows - 1) / 2) * 0.2;
+      l.position.set(nx * 0.52 + nz * along, up, nz * 0.52 + nx * along); l.userData.slot = slot;
       gate.add(l); return l;
     });
     const gateLight = new THREE.PointLight('#b388ff', 1.2, 3, 1); gateLight.position.set(nx * 0.8, 0.8, nz * 0.8); gate.add(gateLight);
@@ -157,24 +250,31 @@ export function createView3D(canvas) {
     // players
     const players = new Map();
     for (const [id, p] of G.players) {
-      const model = makeCarrot(COLORS[p.slot]);
-      const tag = nameSprite(p.name, COLORS[p.slot]); tag.position.y = 1.05; model.add(tag);
-      const carried = makeKey(COLORS[p.slot], 0.7); carried.position.set(0, 1.25, 0); carried.visible = false; model.add(carried);
+      const model = (p.char === 'roundhead' ? makeRoundhead : makeCarrot)(COLORS[p.slot]);
+      const top = p.char === 'roundhead' ? 1.2 : 1.0;
+      const tag = nameSprite(p.name, COLORS[p.slot]); tag.position.y = top + 0.05; model.add(tag);
+      const carried = makeKey(COLORS[p.slot], 0.7); carried.position.set(0, top + 0.25, 0); carried.visible = false; model.add(carried);
       scene.add(model);
       players.set(id, { model, tag, carried });
     }
 
     // your key (only you can see it), and the entity
     const key = makeKey(COLORS[G.slot]); key.visible = false; scene.add(key);
-    const ent = new THREE.Group(), blobs = [];
-    for (let i = 0; i < 8; i++) {
-      const b = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), std(i % 2 ? '#07020a' : '#1c0618', { roughness: 0.4 }));
-      b.castShadow = true; ent.add(b); blobs.push(b);
+    // one model per entity there can be in this game (more players, more entities)
+    const ents = [];
+    for (let k = 0; k < Sh.entityCount(Sh.C.MAX_PLAYERS); k++) {
+      const body = new THREE.Group(), blobs = [];
+      for (let i = 0; i < 8; i++) {
+        const b = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), std(i % 2 ? '#07020a' : '#1c0618', { roughness: 0.4 }));
+        b.castShadow = true; body.add(b); blobs.push(b);
+      }
+      const eyes = new THREE.Group();
+      for (const z of [-0.12, 0.12]) { const e = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), glow('#ff1744')); e.position.set(0, 0, z); eyes.add(e); }
+      const light = new THREE.PointLight('#ff1744', 0, 2.2, 1); body.add(light);
+      body.visible = eyes.visible = false;
+      scene.add(body, eyes);
+      ents.push({ body, blobs, eyes, light, stun: null });
     }
-    const eyes = new THREE.Group();
-    for (const z of [-0.12, 0.12]) { const e = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), glow('#ff1744')); e.position.set(0, 0, z); eyes.add(e); }
-    const entLight = new THREE.PointLight('#ff1744', 0, 2.2, 1); ent.add(entLight);
-    scene.add(ent, eyes);
 
     // safe zones are rebuilt whenever they move
     const zoneGroup = new THREE.Group(); scene.add(zoneGroup);
@@ -182,7 +282,7 @@ export function createView3D(canvas) {
     const zoneLine = new THREE.LineBasicMaterial({ color: '#69f0ae', transparent: true });
     const nextLine = new THREE.LineDashedMaterial({ color: '#69f0ae', dashSize: 0.2, gapSize: 0.2, transparent: true, opacity: 0.6 });
 
-    S = { G, players, key, ent, blobs, eyes, entLight, gate, gateMat, door, locks, gateLight, spot, near, zoneGroup, zoneFill, zoneLine, nextLine, zoneSig: '' };
+    S = { G, apt, forest, players, key, ents, gate, gateMat, door, locks, gateLight, spot, near, zoneGroup, zoneFill, zoneLine, nextLine, zoneSig: '' };
   }
 
   function square(x, y, inset, mat) {
@@ -214,21 +314,23 @@ export function createView3D(canvas) {
     const vx = view.x / TILE, vz = view.y / TILE;
 
     // headlight from the viewer's lamp; it tilts with your look in first person
-    const lamp = new THREE.Vector3(vx + dir.x * 0.22, 0.68, vz + dir.z * 0.22);
-    S.spot.position.copy(lamp); S.near.position.set(vx, 1.0, vz);
-    S.spot.target.position.set(lamp.x + dir.x * 4, 0.68 + Math.tan(f.mode === 'fps' ? f.pitch : 0) * 4 - 0.25, lamp.z + dir.z * 4);
+    const viewModel = S.players.get(view.id), eye = viewModel ? viewModel.model.userData.eye : EYE;
+    const vh = (f.viewH || 0) * WALL_H; // how far up (or down) a staircase the viewer is
+    const lamp = new THREE.Vector3(vx + dir.x * 0.22, eye + 0.06 + vh, vz + dir.z * 0.22);
+    S.spot.position.copy(lamp); S.near.position.set(vx, Math.min(WALL_H - 0.1, Math.max(1.0, eye + 0.35)) + vh, vz); // just above the head
+    S.spot.target.position.set(lamp.x + dir.x * 4, lamp.y + Math.tan(f.mode === 'fps' ? f.pitch : 0) * 4 - 0.25, lamp.z + dir.z * 4);
     S.spot.intensity = 9 * f.flicker; S.near.intensity = 1.6 * (0.5 + 0.5 * f.flicker);
 
     // camera
     let back = 0;
     if (f.mode === 'fps') {
-      camera.position.set(vx, EYE + (f.walk ? Math.abs(Math.sin(f.walk)) * 0.025 : 0), vz);
-      camera.lookAt(vx + Math.cos(view.a) * Math.cos(f.pitch), EYE + Math.sin(f.pitch), vz + Math.sin(view.a) * Math.cos(f.pitch));
+      camera.position.set(vx, eye + vh + (f.walk ? Math.abs(Math.sin(f.walk)) * 0.025 : 0), vz);
+      camera.lookAt(vx + Math.cos(view.a) * Math.cos(f.pitch), eye + vh + Math.sin(f.pitch), vz + Math.sin(view.a) * Math.cos(f.pitch));
     } else {
       back = Math.max(0.35, Math.min(1.9, f.backRoom / TILE - 0.25));
       // with a wall right behind you the camera rises a little to look over your head
-      camera.position.set(vx - dir.x * back, 1.05 + (1.9 - back) * 0.17, vz - dir.z * back);
-      camera.lookAt(vx + dir.x * 1.2, 0.5 + Math.sin(f.pitch) * 1.2, vz + dir.z * 1.2);
+      camera.position.set(vx - dir.x * back, 1.05 + (1.9 - back) * 0.17 + vh, vz - dir.z * back);
+      camera.lookAt(vx + dir.x * 1.2, 0.5 + vh + Math.sin(f.pitch) * 1.2, vz + dir.z * 1.2);
     }
 
     // players
@@ -236,9 +338,10 @@ export function createView3D(canvas) {
       const p = f.players.get(id);
       if (!p) { o.model.visible = false; continue; }
       const firstPersonBody = f.mode === 'fps' && id === view.id;
-      o.model.visible = p.show && !firstPersonBody && !(p.inv && Math.floor(t * 10) % 2);
-      o.tag.visible = id !== view.id;
-      o.model.position.set(p.x / TILE, 0, p.y / TILE);
+      const sameFloor = Sh.floorOf(G.floors, p.x) === Sh.floorOf(G.floors, view.x); // other floors are out of sight
+      o.model.visible = sameFloor && p.show && !firstPersonBody && !(p.inv && Math.floor(t * 10) % 2);
+      o.tag.visible = sameFloor && id !== view.id;
+      o.model.position.set(p.x / TILE, (p.h || 0) * WALL_H, p.y / TILE);
       o.model.rotation.y = -p.a;
       // fade your own carrot when a wall pushes the third-person camera right up behind it
       const fade = f.mode === 'tpp' && id === view.id && back < 1 ? 0.3 : 1;
@@ -246,7 +349,8 @@ export function createView3D(canvas) {
         o.model.userData.fade = fade;
         o.model.traverse(c => { if (c.isMesh) { c.material.transparent = fade < 1; c.material.opacity = fade; } });
       }
-      const { body, legs } = o.model.userData;
+      const { body, legs, arms } = o.model.userData;
+      if (arms) { arms[0].rotation.z = -Math.sin(p.walk) * 0.5; arms[1].rotation.z = Math.sin(p.walk) * 0.5; }
       body.position.y = p.walk ? Math.abs(Math.cos(p.walk)) * 0.04 : 0;
       body.rotation.x = p.walk ? Math.sin(p.walk * 0.5) * 0.06 : 0;
       legs[0].rotation.z = Math.sin(p.walk) * 0.6; legs[1].rotation.z = -Math.sin(p.walk) * 0.6;
@@ -259,21 +363,23 @@ export function createView3D(canvas) {
     if (f.key) { S.key.position.set(f.key.x / TILE, 0.4 + Math.sin(t * 2) * 0.06, f.key.y / TILE); S.key.rotation.y = t * 1.5; }
 
     // the entity: its body shows only in your light, its glowing eyes whenever there's a clear line to it
-    const E = f.ent;
-    S.ent.visible = !!(E && E.lit); S.eyes.visible = !!(E && E.eyes);
-    if (E) {
-      const ex = E.x / TILE, ez = E.y / TILE;
-      S.ent.position.set(ex, 0.5, ez);
-      S.blobs.forEach((b, i) => {
-        const a = t * 2.5 + i * 0.8, r = 0.8 + 0.25 * Math.sin(t * 5 + i);
-        b.position.set(Math.cos(a) * 0.17, Math.sin(t * 3 + i) * 0.12 + (i % 3) * 0.12 - 0.1, Math.sin(a) * 0.17); b.scale.setScalar(r);
+    S.ents.forEach((m, k) => {
+      const E = f.ents.find(e => e.id === k);
+      m.body.visible = !!(E && E.lit); m.eyes.visible = !!(E && E.eyes);
+      m.light.intensity = E && E.lit ? 1.2 : 0;
+      if (!E) return;
+      const te = t + k * 1.7, ex = E.x / TILE, ez = E.y / TILE;
+      const eh = (E.h || 0) * WALL_H;
+      m.body.position.set(ex, 0.5 + eh, ez);
+      m.blobs.forEach((b, i) => {
+        const a = te * 2.5 + i * 0.8, r = 0.8 + 0.25 * Math.sin(te * 5 + i);
+        b.position.set(Math.cos(a) * 0.17, Math.sin(te * 3 + i) * 0.12 + (i % 3) * 0.12 - 0.1, Math.sin(a) * 0.17); b.scale.setScalar(r);
       });
-      S.entLight.intensity = E.lit ? 1.2 : 0;
-      const toCam = Math.atan2(camera.position.z - ez, camera.position.x - ex), blink = Math.sin(t * 0.9) > 0.97 ? 0.3 : 1;
-      S.eyes.position.set(ex + Math.cos(toCam) * 0.3, 0.68, ez + Math.sin(toCam) * 0.3);
-      S.eyes.rotation.y = -toCam; S.eyes.scale.set(1, blink, 1);
-      S.ent.traverse(o => { if (o.material) { o.material.transparent = E.stun; o.material.opacity = E.stun ? 0.5 : 1; } });
-    }
+      const toCam = Math.atan2(camera.position.z - ez, camera.position.x - ex), blink = Math.sin(te * 0.9) > 0.97 ? 0.3 : 1;
+      m.eyes.position.set(ex + Math.cos(toCam) * 0.3, 0.68 + eh, ez + Math.sin(toCam) * 0.3);
+      m.eyes.rotation.y = -toCam; m.eyes.scale.set(1, blink, 1);
+      if (m.stun !== E.stun) { m.stun = E.stun; m.body.traverse(o => { if (o.material) { o.material.transparent = E.stun; o.material.opacity = E.stun ? 0.5 : 1; } }); }
+    });
 
     // gate
     const open = G.gate.open;
@@ -290,6 +396,8 @@ export function createView3D(canvas) {
     S.zoneFill.opacity = 0.2 * blinkK + 0.08; S.zoneLine.opacity = Math.min(1, blinkK + 0.2);
     for (const c of S.zoneGroup.children) if (c.userData.next) c.visible = warn;
 
+    if (S.apt) updateApartment(S.apt, f, t);
+    if (S.forest) updateForest(S.forest, f, t, camera);
     renderer.render(scene, camera);
   }
 
