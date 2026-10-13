@@ -36,11 +36,18 @@
   .result { font-size: 30px; font-weight: 800; margin: 0 0 8px; }
   ul.rules { padding-left: 18px; line-height: 1.55; color: #c9c6da; margin: 10px 0 0; font-size: 14px; }
   details summary { cursor: pointer; color: #b9b5d6; margin-top: 14px; }
+  .seg { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
+  .seg button { flex: 1; min-width: 110px; padding: 9px 10px; }
+  .seg button.on { background: #3a2a7a; border-color: #7c4dff; color: #fff; font-weight: 700; }
+  #c.mode3d { cursor: crosshair; }
+  .seg.chars canvas { position: static; display: block; margin: 0 auto 4px; width: 96px; height: 84px; }
 </style>
 </head>
 <body>
+<canvas id="gl"></canvas>
 <canvas id="c"></canvas>
 <div id="overlay"><div class="panel" id="panel"></div></div>
+<script type="importmap">{ "imports": { "three": "/vendor/three/three.module.js" } }</script>
 <script src="shared.js"></script>
 <script type="module" src="client.js"></script>
 </body>
