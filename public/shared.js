@@ -2,15 +2,25 @@
 (function (S) {
   const C = S.C = {
     TILE: 40, COLS: 41, ROWS: 31,
-    PLAYER_SPEED: 165, PLAYER_R: 12,
-    ENTITY_R: 15, ENTITY_BASE: 118, ENTITY_MAX: 150, ENTITY_RAMP: 0.25,
-    SAFE_INTERVAL: 10, SAFE_WARN: 3,
-    ENTITY_SEEN: 11, // tiles: how close the entity must be before a player's client is told where it is
-    INVULN: 3, MAX_PLAYERS: 12, // no lives: getting caught just sends you back to the start
-    PLAYERS_PER_ENTITY: 4, // one more entity for every this many players
+    PLAYER_SPEED: 165, PLAYER_R: 12, MAX_PLAYERS: 12, MIN_PLAYERS: 2,
+    // freeze tag
+    TAGGER_SPEED: 1.1,   // taggers move this much faster than runners
+    TAG_DIST: 30,        // px: how close a tagger has to get to freeze a runner
+    RESCUE_DIST: 46,     // px: how close a free runner has to stand to unfreeze a frozen one...
+    RESCUE_TIME: 0.75,   // ...and for how many seconds
+    IMMUNE: 2,           // seconds a runner can't be tagged after being unfrozen
+    HOLD: 5,             // seconds at the start when taggers can't move yet (the runners scatter)
+    DANGER_DIST: 7,      // tiles: runners hear the heartbeat when a tagger is this close
+    ROUND_TIMES: [60, 120, 180, 300, 480], ROUND_DEFAULT: 180, // seconds the host can pick from
   };
   const { TILE, COLS, ROWS } = C;
+  // how many taggers: 1 for up to 6 players, 2 for 7 to 12
+  S.taggerCount = n => n <= 6 ? 1 : 2;
   S.COLORS = ['#4fc3f7', '#ffb74d', '#81c784', '#f06292', '#fff176', '#4db6ac', '#ce93d8', '#ff8a65', '#7986cb', '#aed581', '#bcaaa4', '#e0e0e0'];
+  // each player's skin tone and hair color come from their slot, so the clay people all look a bit different
+  const SKINS = ['#f2c9a8', '#d9a07a', '#b97f55', '#8c5a3c', '#e8b58f', '#6b4430', '#f6d6bf', '#c58c66'];
+  const HAIRS = ['#2b1d14', '#6b4223', '#d4a85a', '#151515', '#9b4a24', '#4a3020', '#e8d3a0', '#3a2a2a'];
+  S.look = slot => ({ skin: SKINS[slot % SKINS.length], hair: HAIRS[(slot * 3 + 1) % HAIRS.length] });
   // one spawn tile per player in the 4x3 spawn area at the top-left
   S.SPAWNS = [[1, 1], [3, 1], [1, 3], [3, 3], [2, 2], [4, 2], [2, 1], [4, 1], [1, 2], [3, 2], [2, 3], [4, 3]];
   // facing angle in map space (radians, as Math.atan2(dy, dx): 0 = east, PI/2 = south). Start facing east, into the maze.
@@ -22,10 +32,9 @@
   S.center = t => t * TILE + TILE / 2;
   S.tileOf = o => ({ x: Math.floor(o.x / TILE), y: Math.floor(o.y / TILE) });
   S.dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  S.entityCount = n => Math.max(1, Math.ceil(n / C.PLAYERS_PER_ENTITY));
 
   // maps the host can pick
-  S.MAPS = [['building', 'Building'], ['apartment', 'Apartment (3 floors)'], ['forest', 'Forest']];
+  S.MAPS = [['building', 'Building'], ['apartment', 'Apartment (3 floors)'], ['forest', 'Forest'], ['office', 'Office (lights on)']];
 
   // `links` (optional): Map from a tile index to tile indexes it also connects to (stairs between floors)
   S.bfs = function (sx, sy, pass, links) {
@@ -57,11 +66,12 @@
     return floors.length - 1;
   };
 
-  // a level: { name, grid, floors: [{x0, x1}], stairs: [{x, y, tx, ty, up}], spawns: [[x, y]], gate (or null to pick one) }
+  // a level: { name, grid, floors: [{x0, x1}], stairs: [{x, y, tx, ty, up}], spawns: [[x, y]] }
   S.genLevel = function (name) {
     if (name === 'apartment') return genApartment();
     if (name === 'forest') return genForest();
-    return { name: 'building', grid: S.genMap(), floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns: S.SPAWNS, gate: null };
+    if (name === 'office') return genOffice();
+    return { name: 'building', grid: S.genMap(), floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns: S.SPAWNS };
   };
 
   // A 3-floor apartment block. Each floor: a hallway down the middle with flats on both sides,
@@ -127,12 +137,11 @@
       }
       const spawns = [];
       for (let y = top + FLIGHT + 2; spawns.length < 12; y++) spawns.push([X(FLOORS - 1, 5), y], [X(FLOORS - 1, 6), y]); // top-floor hallway
-      const gate = { x: X(0, 6), y: ROWS - 1, ix: X(0, 6), iy: bot }; // ground-floor entrance
       // every open tile must be reachable from the spawn, using the stairs
       const d = S.bfs(spawns[0][0], spawns[0][1], (x, y) => g[y][x] === 0, S.stairLinks(stairs)).d;
       let ok = true;
       for (let y = 0; y < ROWS && ok; y++) for (let x = 0; x < COLS; x++) if (g[y][x] === 0 && d[I(x, y)] < 0) { ok = false; break; }
-      if (ok) return { name: 'apartment', grid: g, floors, stairs, flights, rooms, furniture, doors, spawns, gate, yaw: -Math.PI / 2 }; // start facing up the hallway, toward the stairs
+      if (ok) return { name: 'apartment', grid: g, floors, stairs, flights, rooms, furniture, doors, spawns, yaw: -Math.PI / 2 }; // start facing up the hallway, toward the stairs
     }
   }
 
@@ -225,10 +234,91 @@
       if (d[I(COLS - 2, gy)] < 0) continue; // the way out must be reachable
       if (F.cabin && d[I(F.cabin.door, F.cabin.y1)] < 0) continue;
       F.path = [...pathSet].filter(k => !F.bridge.some(b => key(b.x, b.y) === k)).map(k => ({ x: k % COLS, y: (k / COLS) | 0 }));
-      const gate = { x: COLS - 1, y: gy, ix: COLS - 2, iy: gy };
-      return { name: 'forest', grid: g, floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns, gate, yaw: 0, forest: F };
+      return { name: 'forest', grid: g, floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns, yaw: 0, forest: F };
     }
   }
+  // A bright open-plan office floor with the lights on, laid out like a real floor plan turned on its side.
+  // Windows run along the top and right walls. Along the windows: a closed-off stairwell, a glass-walled meeting
+  // room, the staff lounge, a think tank with storage, and an open collaboration lounge. Then the main corridor;
+  // the elevator lobby (where you start) and reception, a storage room, a second think tank and the first open-plan
+  // desk area; a second corridor; and the technical room, toilets, a second meeting room, the copy room and the
+  // second desk area. The way out is the emergency stairwell door in the bottom wall.
+  // Grid values as elsewhere: 0 floor, 1 wall, 2 low (blocks walking, not light: desks, sofas, glass walls), 3 tall.
+  const OFFICE_TALL = new Set(['fridge', 'locker', 'shelf', 'rack', 'copier', 'elevator']);
+  function genOffice() {
+    const g = [...Array(ROWS)].map((_, y) => Array(COLS).fill(0).map((_, x) => (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1) ? 1 : 0));
+    const items = [], rooms = [], glass = [], doors = [], windows = [];
+    const fill = (x0, y0, x1, y1, v) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) g[y][x] = v; };
+    const hwall = (y, x0, x1, ...gaps) => { fill(x0, y, x1, y, 1); for (const x of gaps) { g[y][x] = 0; doors.push({ x, y }); } };
+    const vwall = (x, y0, y1, ...gaps) => { fill(x, y0, x, y1, 1); for (const y of gaps) { g[y][x] = 0; doors.push({ x, y }); } };
+    const glassH = (y, x0, x1, door) => { for (let x = x0; x <= x1; x++) if (x === door) { g[y][x] = 0; doors.push({ x, y, glass: true }); } else { g[y][x] = 2; glass.push({ x, y }); } };
+    const put = (type, x, y, w = 1, h = 1, extra = {}) => { fill(x, y, x + w - 1, y + h - 1, OFFICE_TALL.has(type) ? 3 : 2); items.push({ type, x, y, w, h, ...extra }); };
+    const room = (type, x0, y0, x1, y1) => rooms.push({ type, x0, y0, x1, y1 });
+    const YELLOW = '#f0c419', GREY = '#8a8f99', BLUE = '#2f6fb3';
+
+    for (let x = 1; x < COLS - 1; x++) windows.push({ x, y: 0 });
+    for (let y = 1; y < ROWS - 1; y++) windows.push({ x: COLS - 1, y });
+
+    // ---- along the windows (rows 1-8)
+    fill(1, 1, 5, 8, 1); items.push({ type: 'stairwell', x: 1, y: 1, w: 5, h: 8 }); // stairwell A, closed off
+    vwall(6, 1, 8);
+    room('meeting', 7, 1, 14, 8); put('table', 9, 3, 4, 4); put('plant', 7, 1); put('plant', 14, 8);
+    vwall(15, 1, 8);
+    room('lounge', 16, 1, 22, 8);
+    put('counter', 16, 1, 1, 2); put('fridge', 16, 3); put('longtable', 18, 3, 4, 3); put('sofa', 18, 7, 3, 1, { color: YELLOW, face: -1 }); put('plant', 22, 1);
+    vwall(23, 1, 8);
+    room('think', 24, 1, 27, 4); put('table', 25, 2, 2, 1);
+    hwall(5, 24, 27, 25);
+    room('storage', 24, 6, 27, 8); put('shelf', 27, 6, 1, 3);
+    vwall(28, 1, 8);
+    room('collab', 29, 1, 39, 9); // open onto the corridor
+    put('locker', 29, 1, 1, 3);
+    put('sofa', 32, 3, 2, 1, { color: YELLOW, face: -1 }); put('coffee', 32, 4, 2, 1); put('sofa', 32, 5, 2, 1, { color: YELLOW, face: 1 });
+    put('coffee', 36, 4, 1, 1, { round: true });
+    put('armchair', 36, 3, 1, 1, { color: YELLOW, face: -1 }); put('armchair', 36, 5, 1, 1, { color: GREY, face: 1 });
+    put('armchair', 35, 4, 1, 1, { color: GREY, face: 0 }); put('armchair', 37, 4, 1, 1, { color: YELLOW, face: 2 });
+    put('bartable', 37, 1, 2, 1); put('armchair', 39, 7, 1, 1, { color: BLUE, face: 2 });
+    put('cabinet', 30, 7, 2, 1); put('plant', 39, 1);
+    items.push({ type: 'pendant', x: 33, y: 4 }, { type: 'pendant', x: 36.5, y: 4.5 }); // big dome lamps (decoration only)
+
+    // ---- the main corridor (rows 10-11); the meeting room has a glass front with a glass door
+    hwall(9, 1, 6); glassH(9, 7, 14, 10); hwall(9, 15, 28, 17, 21, 26);
+    room('corridor', 1, 10, 39, 11);
+
+    // ---- the middle (rows 12-18)
+    room('lobby', 1, 12, 5, 18); put('elevator', 1, 13, 1, 2); put('elevator', 1, 16, 1, 2);
+    room('reception', 6, 12, 11, 18); put('reception', 8, 14, 2, 2); put('plant', 11, 12); put('plant', 6, 18);
+    hwall(12, 12, 24, 15, 21); hwall(18, 12, 24, 14, 22); vwall(12, 12, 18); vwall(18, 12, 18); vwall(24, 12, 18);
+    room('storage', 13, 13, 17, 17); put('shelf', 13, 13, 1, 3); put('shelf', 17, 15, 1, 3);
+    room('think', 19, 13, 23, 17); put('table', 20, 15, 2, 1); put('sofa', 23, 13, 1, 2, { color: BLUE, face: 2 });
+    room('open', 25, 12, 39, 18);
+    for (const [x, y] of [[26, 13], [32, 13], [26, 16], [32, 16]]) put('pod', x, y, 4, 2);
+    put('cabinet', 37, 13, 2, 1); put('cabinet', 37, 17, 2, 1);
+
+    // ---- the second corridor (rows 19-20)
+    room('corridor', 1, 19, 39, 20);
+
+    // ---- the inner side (rows 22-29)
+    hwall(21, 1, 14, 3, 7, 12); glassH(21, 15, 21, 18); hwall(21, 22, 28, 25);
+    vwall(5, 21, 29); vwall(10, 21, 29); vwall(14, 21, 29); vwall(22, 21, 29); vwall(28, 21, 29);
+    room('tech', 1, 22, 4, 29); put('rack', 2, 23, 1, 5);
+    room('wc', 6, 22, 9, 29); put('toilet', 6, 29); put('partition', 7, 28, 1, 2); put('toilet', 8, 29); put('sink', 9, 23, 1, 2);
+    room('wc', 11, 22, 13, 29); put('toilet', 11, 29); put('partition', 12, 28, 1, 2); put('toilet', 13, 29); put('sink', 13, 23, 1, 2);
+    room('meeting', 15, 22, 21, 29); put('table', 16, 24, 5, 3); put('plant', 15, 29); put('plant', 21, 22);
+    room('copy', 23, 22, 27, 29); put('copier', 23, 22); put('locker', 24, 29, 4, 1); put('cabinet', 25, 25, 2, 1);
+    room('open', 29, 21, 39, 29);
+    for (const [x, y] of [[30, 23], [35, 23], [30, 26], [35, 26]]) put('pod', x, y, 4, 2);
+    put('plant', 29, 29); put('plant', 39, 21);
+
+    const spawns = [];
+    for (let y = 13; y <= 15; y++) for (let x = 2; x <= 5; x++) spawns.push([x, y]); // the elevator lobby
+    const d = S.bfs(spawns[0][0], spawns[0][1], (x, y) => g[y][x] === 0).d;
+    for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++)
+      if (g[y][x] === 0 && d[I(x, y)] < 0) throw new Error(`office layout: tile ${x},${y} can't be reached`);
+    return { name: 'office', grid: g, floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns, yaw: 0, bright: true,
+      office: { items, rooms, glass, doors, windows } };
+  }
+
   function shuffleIn(a) { for (let i = a.length - 1; i > 0; i--) { const j = rand(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
   // Furniture goes only along the back wall and the hallway-side wall of a room, never in front of the
@@ -313,7 +403,7 @@
     }
     split(1, 1, COLS - 2, ROWS - 2);
 
-    // extra doorways so there are loops (so players can circle around the entity)
+    // extra doorways so there are loops (so runners can circle around a tagger)
     for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) {
       if (g[y][x] !== 1 || Math.random() > 0.05) continue;
       const h = g[y][x - 1] === 0 && g[y][x + 1] === 0, v = g[y - 1][x] === 0 && g[y + 1][x] === 0;
@@ -339,16 +429,14 @@
     return g;
   }
 
-  // `w` is any object with { grid, gate: { x, y, open } }
+  // `w` is any object with { grid }
   S.solid = function (w, tx, ty) {
     if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) return true;
-    if (tx === w.gate.x && ty === w.gate.y) return !w.gate.open;
     return w.grid[ty][tx] !== 0; // walls and furniture
   };
   // what your headlight can't shine through: walls and tall furniture (not beds, sofas, tables...)
   S.blocksLight = function (w, tx, ty) {
     if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) return true;
-    if (tx === w.gate.x && ty === w.gate.y) return !w.gate.open;
     const v = w.grid[ty][tx];
     return v === 1 || v === 3;
   };

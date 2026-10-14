@@ -1,19 +1,31 @@
 # Keybound
 
-Top-down online co-op escape game for 1–12 players, each on their own device (PC or phone).
-You explore a dark building with a headlight. Walls block your light, so you only see what's in your line of sight.
+Online freeze tag in the dark for 2–12 players, each on their own device (PC or phone).
+Everyone has a headlight, and walls block it, so you only see what's in your line of sight.
+
+## How to play
+
+- At the start of each round, players are picked at random to be **IT** (taggers): 1 for 2–6 players, 2 for 7–12. Everyone else is a **runner**. Everyone plays as a clay man or woman (pick one in the lobby).
+- Runners get a 5-second head start. Then a tagger who touches a runner **freezes** them, and frozen runners can't move.
+- A free runner who stands next to a frozen one for 0.75 seconds **unfreezes** them. They can't be tagged for 2 seconds afterwards.
+- **Taggers win** if every runner is frozen before time runs out. **Runners win** if at least one is still free when the timer ends.
+- The host picks the map and the round length (1, 2, 3, 5 or 8 minutes) in the lobby. "Play again" picks new taggers.
+- Runners always see where the other runners are (frozen ones are marked with ❄), so they can go and rescue them. Taggers only show up when you can actually see them. When a tagger gets close you hear a heartbeat and the chase music.
+
+The rules' numbers (tagger speed, unfreeze time, head start, round lengths...) are at the top of `public/shared.js`.
 
 ## Maps
 
 The host picks the map in the lobby:
 
 - **Building:** a single floor of rooms, hallways and doorways, different every game.
-- **Forest:** a forest at night. You start at a campfire; a winding path leads to the way out on the far side. Trees block your way and your light; bushes, rocks, logs and the pond (cross it by the bridge) only block your way. There's an abandoned cabin in the woods.
-- **Apartment (3 floors):** a hallway down each floor with flats on both sides and a stairwell at each end. Walk onto a staircase (▲ up, ▼ down) to change floors. You start on the top floor; the way out is the entrance on the ground floor. Keys can be on any floor, and the entities follow you up and down the stairs.
+- **Forest:** a forest at night. Runners start at a campfire; winding paths lead off through the trees. Trees block your way and your light; bushes, rocks, logs and the pond (cross it by the bridge) only block your way. There's an abandoned cabin in the woods.
+- **Office (lights on):** a bright open-plan office floor based on a real floor plan: glass-walled meeting rooms, a staff lounge, a collaboration lounge with yellow sofas by the windows, desk pods, toilets, a copy room and a server room. Runners start in the elevator lobby. The lights are on, so you can see all around you, but walls still block your view (glass walls don't). In the 3D views the whole office, characters included, is made of clay.
+- **Apartment (3 floors):** a hallway down each floor with flats on both sides and a stairwell at each end. Walk onto a staircase (▲ up, ▼ down) to change floors. Runners start on the top floor, and everyone can chase or flee up and down the stairs.
 
 ## Views
 
-Each player picks their own view in the lobby: **Top-down**, **Third person** or **First person**. Press **V** during a game to switch. Press **M** to turn the background music (`public/music.mp3`) on or off. When the entity is hunting you, a chase sound (`public/chase.mp3`) plays, louder the closer it gets.
+Each player picks their own view in the lobby: **Top-down**, **Third person** or **First person**. Press **V** during a game to switch. Press **M** to turn the background music (`public/music.mp3`) on or off. When a tagger is close behind you, a chase sound (`public/chase.mp3`) plays, louder the closer they get.
 
 ## Controls
 
@@ -53,9 +65,10 @@ It prints a `https://something.trycloudflare.com` address. Open that address you
 
 ## How it works
 
-- `server.js`: serves the game and runs every room. It decides where keys, the entity, safe zones, catches and the gate are. Each player receives a personal update with only **their own** key, and the entity only when it's inside their light.
-- `public/client.js`: lobby screens, the top-down view (2D canvas), line-of-sight lighting, the carrot-man characters, heartbeat sound, HUD, keyboard/touch input. Vision settings (`R_NEAR`, `R_FAR`, `CONE`) are at the top. Your own movement runs locally so it feels instant, and the server checks it so nobody can walk through walls or teleport.
-- `public/view3d.js`: the first- and third-person views, drawn with Three.js (served from `node_modules`, so run `npm install`). It only loads when someone picks a 3D view.
+- `server.js`: serves the game and runs every room's round of freeze tag: it picks the taggers, decides who gets frozen and unfrozen, and who wins.
+- `public/client.js`: lobby screens, the top-down view (2D canvas), line-of-sight lighting, the clay man and woman characters, heartbeat sound, HUD, keyboard/touch input. Vision settings (`R_NEAR`, `R_FAR`, `CONE`) are at the top. Your own movement runs locally so it feels instant, and the server checks it so nobody can walk through walls or teleport.
+- `public/view3d.js`: the first- and third-person views (with the characters modelled in clay), drawn with Three.js (served from `node_modules`, so run `npm install`). It only loads when someone picks a 3D view.
+- `public/clay.js`: the clay look used by the Office in 3D: rounded, slightly lumpy shapes, a matte clay material with dents and fingerprints, and soft contact shadows (ambient occlusion, skipped on phones). `public/office3d.js` builds the clay office with it.
 - `public/shared.js`: map generation (rooms, hallways and furniture), pathfinding and collision, used by both sides.
 
-Gameplay settings (speeds, vision radius, entities per player, safe-zone timer) are at the top of `public/shared.js`.
+Gameplay settings (speeds, tag and unfreeze distances, head start, round lengths) are at the top of `public/shared.js`.
