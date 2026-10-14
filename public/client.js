@@ -1,6 +1,7 @@
 import { drawApartmentMap, drawDoors2D, doorSwing } from './apartment2d.js';
 import { drawForestMap, drawForestGlow } from './forest2d.js';
 import { drawOfficeMap, drawOfficeLamps } from './office2d.js';
+import { drawDefined } from './outline2d.js';
 const Sh = window.Shared;
 const { TILE, COLS, ROWS, PLAYER_R, PLAYER_SPEED, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, ROUND_TIMES } = Sh.C;
 const { center, dist } = Sh;
@@ -492,23 +493,20 @@ function shade(hex, k) {
   const c = v => Math.max(0, Math.min(255, Math.round(v * k)));
   return `rgb(${c(n >> 16)},${c((n >> 8) & 255)},${c(n & 255)})`;
 }
-function renderMaps() {
-  mapCanvas = document.createElement('canvas');
-  mapCanvas.width = COLS * TILE; mapCanvas.height = ROWS * TILE;
-  const m = mapCanvas.getContext('2d');
+// the building: tiled floor, purple walls with a brick front face, and crates for the furniture
+function drawBuildingMap(m) {
   const FACE = 14; // visible front face of walls, for a bit of depth
-  if (G.map === 'apartment') drawApartmentMap(m, G);
-  else if (G.map === 'forest') drawForestMap(m, G);
-  else if (G.map === 'office') drawOfficeMap(m, G);
-  else for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+  const crate = buildingFurniture();
+  const solid = (x, y) => y >= 0 && y < ROWS && x >= 0 && x < COLS && G.grid[y][x] === 1 && !crate.has(y * COLS + x);
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
     const px = x * TILE, py = y * TILE;
-    if (G.grid[y][x] === 0) {
+    if (!solid(x, y)) {
       m.fillStyle = (x + y) % 2 ? '#2b2a38' : '#2e2d3c'; m.fillRect(px, py, TILE, TILE);
       m.strokeStyle = 'rgba(0,0,0,.25)'; m.lineWidth = 1; m.strokeRect(px + 0.5, py + 0.5, TILE - 1, TILE - 1);
       m.fillStyle = 'rgba(255,255,255,.035)'; m.fillRect(px + 4, py + 4, TILE - 8, 2);
-      if (y > 0 && G.grid[y - 1][x] === 1) { m.fillStyle = 'rgba(0,0,0,.35)'; m.fillRect(px, py, TILE, 7); } // shadow under a wall
+      if (solid(x, y - 1)) { m.fillStyle = 'rgba(0,0,0,.35)'; m.fillRect(px, py, TILE, 7); } // shadow under a wall
     } else {
-      const faceShown = y + 1 < ROWS && G.grid[y + 1][x] === 0;
+      const faceShown = y + 1 < ROWS && !solid(x, y + 1);
       m.fillStyle = '#4a4466'; m.fillRect(px, py, TILE, TILE);
       m.fillStyle = '#56507a'; m.fillRect(px, py, TILE, 3);
       if (faceShown) {
@@ -521,8 +519,64 @@ function renderMaps() {
         m.moveTo(px + (off + TILE / 2) % TILE + 0.5, fy + FACE / 2); m.lineTo(px + (off + TILE / 2) % TILE + 0.5, fy + FACE);
         m.stroke();
       }
+      // a crisp edge where the wall meets the floor, and a light lip along the top of the wall
+      m.fillStyle = '#141220';
+      if (!solid(x - 1, y)) m.fillRect(px, py, 2, TILE);
+      if (!solid(x + 1, y)) m.fillRect(px + TILE - 2, py, 2, TILE);
+      if (!solid(x, y - 1)) { m.fillRect(px, py, TILE, 2); m.fillStyle = '#6c659a'; m.fillRect(px, py + 2, TILE, 2); }
+      if (faceShown) { m.fillStyle = '#141220'; m.fillRect(px, py + TILE - 2, TILE, 2); m.fillStyle = '#6c659a'; m.fillRect(px, py + TILE - FACE, TILE, 1.5); }
     }
   }
+  // furniture: wooden crates, outlined so they stand out from the walls and floor
+  drawDefined(m, c => {
+    for (const k of crate) {
+      const x = k % COLS, y = (k - x) / COLS, px = x * TILE, py = y * TILE;
+      const L = !crate.has(k - 1), R = !crate.has(k + 1), T = !crate.has(k - COLS), B = !crate.has(k + COLS); // outer sides of the block
+      const x0 = px + (L ? 3 : 0), x1 = px + TILE - (R ? 3 : 0), y0 = py + (T ? 3 : 0), y1 = py + TILE - (B ? 3 : 0);
+      c.fillStyle = '#8a6440'; c.fillRect(x0, y0, x1 - x0, y1 - y0);
+      c.strokeStyle = 'rgba(40,24,10,.55)'; c.lineWidth = 1; c.beginPath(); // planks
+      for (let i = 1; i < 4; i++) { c.moveTo(x0, py + i * 10 + 0.5); c.lineTo(x1, py + i * 10 + 0.5); }
+      c.stroke();
+      c.fillStyle = '#b08458'; // the frame round each crate, with a cross brace
+      c.fillRect(px + 5, py + 5, TILE - 10, 3); c.fillRect(px + 5, py + TILE - 8, TILE - 10, 3);
+      c.fillRect(px + 5, py + 5, 3, TILE - 10); c.fillRect(px + TILE - 8, py + 5, 3, TILE - 10);
+      c.save(); c.translate(px + TILE / 2, py + TILE / 2); c.rotate(Math.PI / 4); c.fillRect(-19, -1.5, 38, 3); c.restore();
+      c.fillStyle = '#3a2614'; for (const [dx, dy] of [[6.5, 6.5], [TILE - 6.5, 6.5], [6.5, TILE - 6.5], [TILE - 6.5, TILE - 6.5]]) { c.beginPath(); c.arc(px + dx, py + dy, 1.3, 0, Math.PI * 2); c.fill(); } // nails
+    }
+  }, { line: '#0b0a12', width: 2, rim: 'rgba(255,225,180,.3)', shadow: 'rgba(0,0,0,.65)', drop: 6, blur: 5 });
+}
+
+// the building's furniture: little blocks (up to 2x2) that aren't joined to any wall
+function buildingFurniture() {
+  const out = new Set(), seen = new Set();
+  for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) {
+    const k0 = y * COLS + x;
+    if (G.grid[y][x] !== 1 || seen.has(k0)) continue;
+    const part = [k0], stack = [k0]; seen.add(k0);
+    let edge = false;
+    while (stack.length) {
+      const k = stack.pop(), cx = k % COLS, cy = (k - cx) / COLS;
+      if (cx === 0 || cy === 0 || cx === COLS - 1 || cy === ROWS - 1) edge = true;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cx + dx, ny = cy + dy, n = ny * COLS + nx;
+        if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS || G.grid[ny][nx] !== 1 || seen.has(n)) continue;
+        seen.add(n); part.push(n); stack.push(n);
+      }
+      if (part.length > 4) break;
+    }
+    if (!edge && part.length <= 4 && !stack.length) for (const k of part) out.add(k);
+  }
+  return out;
+}
+
+function renderMaps() {
+  mapCanvas = document.createElement('canvas');
+  mapCanvas.width = COLS * TILE; mapCanvas.height = ROWS * TILE;
+  const m = mapCanvas.getContext('2d');
+  if (G.map === 'apartment') drawApartmentMap(m, G);
+  else if (G.map === 'forest') drawForestMap(m, G);
+  else if (G.map === 'office') drawOfficeMap(m, G);
+  else drawBuildingMap(m);
   // staircases: steps, with an arrow for up or down (the apartment draws its own flights)
   if (G.map !== 'apartment') for (const s of G.stairs) {
     const px = s.x * TILE, py = s.y * TILE;
