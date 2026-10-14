@@ -93,7 +93,6 @@ export function buildForest(scene, G, WALL_H) {
     const inMap = x >= 0 && y >= 0 && x < COLS && y < ROWS;
     if (inMap && G.grid[y][x] !== 1) continue;
     if (inMap && F.cabin && x >= F.cabin.x0 && x <= F.cabin.x1 && y >= F.cabin.y0 && y <= F.cabin.y1) continue;
-    if (inMap && x === G.gate.x && y === G.gate.y) continue;
     if (!inMap && hash(x, y, 4) < 0.35) continue;
     edge.push({ x, y, kind: 'pine', s: 1.1 + hash(x, y) * 0.5, ox: (hash(x, y, 1) - 0.5) * 0.5, oz: (hash(x, y, 2) - 0.5) * 0.5, rot: hash(x, y, 3) * 6.3 });
   }

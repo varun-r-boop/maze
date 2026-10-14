@@ -3,6 +3,8 @@
 import * as THREE from 'three';
 import { buildApartment, updateApartment } from './apartment3d.js';
 import { buildForest, updateForest } from './forest3d.js';
+import { buildOffice } from './office3d.js';
+import { clay, rbox, blob, clayifyScene, createClayFX, resetClay } from './clay.js';
 
 const Sh = window.Shared;
 const { TILE, COLS, ROWS } = Sh.C;
@@ -22,109 +24,71 @@ function canvasTex(size, draw, repeatX = 1, repeatY = 1) {
 const std = (color, extra) => new THREE.MeshStandardMaterial({ color, roughness: 0.85, ...extra });
 const glow = (color, extra) => new THREE.MeshBasicMaterial({ color, ...extra });
 
-// the carrot man, facing +x: cone body, leafy top, scarf in the player's color, face and headlamp
-function makeCarrot(color) {
-  const g = new THREE.Group(), body = new THREE.Group();
-  g.add(body);
-  const orange = std('#f28c28'), leg = std('#b85a14'), dark = glow('#1a0f08');
-  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.21, 0.58, 14), orange);
-  cone.rotation.x = Math.PI; cone.position.y = 0.43; body.add(cone);
-  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.21, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), orange);
-  cap.position.y = 0.72; cap.scale.y = 0.35; body.add(cap);
-  for (const [rx, rz, h, col] of [[0.5, 0, 0.26, '#3f9a3a'], [-0.5, 0, 0.24, '#3f9a3a'], [0, 0.15, 0.32, '#55b84a']]) {
-    const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.05, h, 6), std(col));
-    leaf.geometry.translate(0, h / 2, 0); leaf.position.y = 0.76; leaf.rotation.set(rx, 0, rz);
-    body.add(leaf);
+// a clay person, facing +x: a rounded body in the player's color (a shirt and trousers for the man, a dress for
+// the woman), a round head with hair and a little face, arms and legs that swing, and a headlamp on a strap.
+// Skin tone and hair color come from the player's slot (Sh.look).
+const shadeHex = (hex, k) => '#' + new THREE.Color(hex).multiplyScalar(k).getHexString();
+function makePerson(kind, color, slot) {
+  const { skin, hair } = Sh.look(slot), woman = kind === 'woman';
+  const g = new THREE.Group(), body = new THREE.Group(); g.add(body);
+  const skinM = clay(skin), clothM = clay(color), hairM = clay(hair), dark = clay('#2a1d18');
+  const mesh = (geo, mat, x, y, z, parent = body) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; parent.add(m); return m; };
+  if (woman) {
+    mesh(new THREE.CylinderGeometry(0.12, 0.25, 0.44, 20), clothM, 0, 0.46, 0); // a flared dress
+    mesh(blob(0.15, 2, 0.004), clothM, 0, 0.66, 0).scale.set(0.95, 0.75, 1.15); // shoulders
+  } else {
+    mesh(rbox(0.26, 0.4, 0.38, 0.11, 0.008, slot), clothM, 0, 0.55, 0); // shirt
+    mesh(rbox(0.25, 0.06, 0.34, 0.03, 0), clay('#3a3f4c'), 0, 0.37, 0); // belt
   }
-  const scarf = new THREE.Mesh(new THREE.TorusGeometry(0.165, 0.035, 8, 20), std(color));
-  scarf.rotation.x = Math.PI / 2; scarf.position.y = 0.56; body.add(scarf);
-  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.06), std(color));
-  tail.position.set(-0.22, 0.52, 0.06); tail.rotation.z = -0.5; body.add(tail);
+  mesh(new THREE.CylinderGeometry(0.055, 0.06, 0.08, 12), skinM, 0, 0.78, 0); // neck
+  mesh(blob(0.17, 3, 0.006, slot), skinM, 0, 0.95, 0); // head
+  // hair: a short cap for him; a fuller cap with hair down her back for her
+  const cap = mesh(new THREE.SphereGeometry(0.18, 22, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), hairM, -0.01, 0.97, 0);
+  cap.rotation.z = 0.25; // pushed back a little, so the forehead shows
+  if (woman) mesh(blob(0.15, 2, 0.01, slot + 3), hairM, -0.09, 0.83, 0).scale.set(0.8, 1.5, 1.2);
+  // face: eyes, a nose and rosy cheeks
   for (const z of [-0.06, 0.06]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 6), dark);
-    eye.position.set(0.185, 0.66, z); body.add(eye);
+    mesh(new THREE.SphereGeometry(0.022, 10, 8), dark, 0.155, 0.96, z);
+    mesh(new THREE.SphereGeometry(0.03, 10, 8), clay('#e88a8a'), 0.14, 0.9, z * 1.6);
   }
-  const strap = new THREE.Mesh(new THREE.TorusGeometry(0.205, 0.015, 6, 20), std(color));
-  strap.rotation.x = Math.PI / 2; strap.position.y = 0.7; body.add(strap);
-  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.04, 10, 8), glow('#fff3c4'));
-  lamp.position.set(0.21, 0.71, 0); body.add(lamp);
-  const legs = [-0.07, 0.07].map(z => {
-    const l = new THREE.Group(); l.position.set(0, 0.16, z);
-    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.14, 6), leg); m.position.y = -0.07; l.add(m);
-    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), std('#3b2a20')); foot.scale.set(1.4, 0.6, 1); foot.position.set(0.02, -0.145, 0); l.add(foot);
-    g.add(l); return l;
-  });
-  g.userData = { body, legs, eye: EYE };
-  return g;
-}
-
-// the roundhead, facing +x: a huge bristly round head on a pale muscular torso, dark trousers,
-// belt and headlamp strap in the player's color
-let headTex = null, chestTex = null;
-function makeRoundhead(color) {
-  headTex = headTex || canvasTex(256, (x, n) => {
-    x.fillStyle = '#625c68'; x.fillRect(0, 0, n, n);
-    x.strokeStyle = 'rgba(18,14,22,.8)'; x.lineWidth = 2;
-    for (let i = 0; i < 900; i++) { // short bristles
-      const px = (i * 97.13) % n, py = (i * 57.71) % n, a = (i * 2.4) % 6.28;
-      x.beginPath(); x.moveTo(px, py); x.lineTo(px + Math.cos(a) * 7, py + Math.sin(a) * 7); x.stroke();
-    }
-  });
-  chestTex = chestTex || canvasTex(256, (x, n) => {
-    x.fillStyle = '#d6ced2'; x.fillRect(0, 0, n, n);
-    x.strokeStyle = 'rgba(70,52,64,.75)'; x.lineWidth = 3; x.lineCap = 'round';
-    const cx = n * 0.25, w = n * 0.11; // the front (+x) of a cylinder's texture is a quarter of the way along
-    x.beginPath();
-    x.moveTo(cx - w * 1.6, 70); x.quadraticCurveTo(cx - w * 0.8, 100, cx, 78); x.quadraticCurveTo(cx + w * 0.8, 100, cx + w * 1.6, 70);
-    x.moveTo(cx, 80); x.lineTo(cx, 220);
-    for (const y of [130, 165, 200]) { x.moveTo(cx - w, y - 4); x.lineTo(cx - 6, y); x.moveTo(cx + 6, y); x.lineTo(cx + w, y - 4); }
-    x.stroke();
-  });
-  const g = new THREE.Group(), body = new THREE.Group();
-  g.add(body);
-  const skin = std('#ffffff', { map: chestTex }), limb = std('#d3cbcf'), cloth = std('#2a2731');
-  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.14, 0.36, 18), skin);
-  torso.position.y = 0.52; torso.scale.z = 1.25; body.add(torso);
-  const shoulders = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), limb);
-  shoulders.position.y = 0.69; shoulders.scale.set(1, 0.3, 1.25); body.add(shoulders);
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.08, 10), limb); neck.position.y = 0.74; body.add(neck);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 24, 18), std('#ffffff', { map: headTex, roughness: 1 }));
-  head.position.y = 0.94; body.add(head);
-  for (const z of [-0.07, 0.07]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), glow('#e9e4e8'));
-    eye.position.set(0.195, 0.95, z); body.add(eye);
-  }
-  const strap = new THREE.Mesh(new THREE.TorusGeometry(0.205, 0.016, 6, 24), std(color));
-  strap.rotation.x = Math.PI / 2; strap.position.y = 1.0; body.add(strap);
-  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.04, 10, 8), glow('#fff3c4'));
-  lamp.position.set(0.21, 1.0, 0); body.add(lamp);
-  const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.05, 18), std(color));
-  belt.position.y = 0.35; belt.scale.z = 1.25; body.add(belt);
-  const hips = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.13, 0.08, 14), cloth);
-  hips.position.y = 0.3; hips.scale.z = 1.25; body.add(hips);
-  const limbGroup = (y, z, len, r, mat) => {
+  mesh(blob(0.03, 1, 0.002), skinM, 0.175, 0.92, 0);
+  // headlamp on a strap in the player's color
+  mesh(new THREE.TorusGeometry(0.172, 0.013, 6, 24), clothM, 0, 1.0, 0).rotation.x = Math.PI / 2;
+  mesh(new THREE.SphereGeometry(0.035, 10, 8), glow('#fff3c4'), 0.17, 1.02, 0);
+  const limb = (y, z, len, r, mat, parent) => {
     const l = new THREE.Group(); l.position.set(0, y, z);
-    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 0.85, len, 8), mat); m.position.y = -len / 2; l.add(m);
-    return l;
+    const m = new THREE.Mesh(new THREE.CapsuleGeometry(r, len, 4, 10), mat); m.position.y = -len / 2 - r * 0.3; m.castShadow = true; l.add(m);
+    parent.add(l); return l;
   };
   const legs = [-0.08, 0.08].map(z => {
-    const l = limbGroup(0.3, z, 0.27, 0.05, cloth);
-    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), std('#18161c')); foot.scale.set(1.5, 0.6, 1); foot.position.set(0.03, -0.28, 0); l.add(foot);
-    g.add(l); return l;
+    const l = limb(0.3, z, 0.18, 0.055, woman ? skinM : clay('#4b566b'), g);
+    const foot = new THREE.Mesh(blob(0.055, 1, 0.004), clay(woman ? shadeHex(color, 0.6) : '#3a2c26'));
+    foot.scale.set(1.5, 0.6, 1); foot.position.set(0.03, -0.29, 0); l.add(foot);
+    return l;
   });
-  const arms = [-0.25, 0.25].map(z => { const a = limbGroup(0.67, z, 0.32, 0.045, limb); body.add(a); return a; });
-  g.userData = { body, legs, arms, eye: 0.94 };
+  const arms = [-0.21, 0.21].map(z => {
+    const a = limb(0.7, z, 0.22, 0.045, clothM, body);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), skinM); hand.position.y = -0.33; a.add(hand);
+    return a;
+  });
+  // everyone gets their own materials, so fading one person (in third person) never changes anyone else
+  g.traverse(o => { if (o.isMesh) o.material = o.material.clone(); });
+  g.userData = { body, legs, arms, eye: 0.95 };
   return g;
 }
 
-function makeKey(color, s = 1) {
-  const m = glow(color), g = new THREE.Group();
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.022, 8, 16), m); ring.position.x = -0.12; g.add(ring);
-  const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.035, 0.035), m); shaft.position.x = 0.04; g.add(shaft);
-  for (const x of [0.07, 0.13]) { const t = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.07, 0.035), m); t.position.set(x, -0.04, 0); g.add(t); }
-  const light = new THREE.PointLight(color, 0.6, 1.2, 1); g.add(light);
-  g.scale.setScalar(s);
-  return g;
+// the freeze-tag bits around a person: a glowing red ring under a tagger, a block of ice around a frozen runner,
+// and a green ring that fills up while a friend unfreezes them. (These never fade with the person.)
+function addTagBits(model, role) {
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.03, 8, 32), glow('#ff3b3b', { transparent: true }));
+  ring.rotation.x = Math.PI / 2; ring.position.y = 0.03; ring.visible = role === 'it';
+  const ice = new THREE.Mesh(rbox(0.62, 1.3, 0.62, 0.12, 0.01),
+    new THREE.MeshPhysicalMaterial({ color: '#cdefff', transparent: true, opacity: 0.42, roughness: 0.08, clearcoat: 1, depthWrite: false }));
+  ice.position.y = 0.62; ice.visible = false;
+  const rescue = new THREE.Mesh(new THREE.RingGeometry(0.4, 0.46, 40), glow('#69f0ae', { side: THREE.DoubleSide }));
+  rescue.rotation.x = -Math.PI / 2; rescue.position.y = 0.04; rescue.visible = false;
+  for (const o of [ring, ice, rescue]) { o.userData.noFade = true; model.add(o); }
+  return { ring, ice, rescue };
 }
 
 function nameSprite(text, color) {
@@ -144,16 +108,22 @@ export function createView3D(canvas) {
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   const camera = new THREE.PerspectiveCamera(72, 1, 0.04, 40);
   let scene = null, S = null; // S: everything built for the current game
+  let fx = null, dpr = 1; // clay maps: soft contact shadows drawn after the scene (not on phones, it's too slow there)
+  const lowPower = matchMedia('(pointer: coarse)').matches;
 
-  function resize(W, H, DPR) { renderer.setPixelRatio(DPR); renderer.setSize(W, H); camera.aspect = W / H; camera.updateProjectionMatrix(); }
+  function resize(W, H, DPR) {
+    dpr = DPR; renderer.setPixelRatio(DPR); renderer.setSize(W, H); camera.aspect = W / H; camera.updateProjectionMatrix();
+    if (fx) fx.setSize(W, H, DPR);
+  }
 
   function build(G) {
+    if (fx) { fx.dispose(); fx = null; }
+    resetClay();
     if (scene) scene.traverse(o => { // free the previous game's scene
       if (o.geometry) o.geometry.dispose();
       for (const m of [].concat(o.material || [])) { if (m.map) m.map.dispose(); m.dispose(); }
       if (o.shadow && o.shadow.map) o.shadow.map.dispose();
     });
-    headTex = chestTex = null; // shared character textures were freed with the old scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color('#050509');
     scene.fog = new THREE.Fog('#050509', 3, R_FAR + 1.5);
@@ -163,6 +133,7 @@ export function createView3D(canvas) {
     let apt = null, forest = null;
     if (G.map === 'apartment') apt = buildApartment(scene, G, WALL_H);
     else if (G.map === 'forest') forest = buildForest(scene, G, WALL_H);
+    else if (G.map === 'office') buildOffice(scene, G, WALL_H);
     else {
       // floor, ceiling and walls
       const floorTex = canvasTex(128, (x, n) => {
@@ -191,7 +162,7 @@ export function createView3D(canvas) {
       }, 1, WALL_H);
       const tiles = [];
       for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++)
-        if (G.grid[y][x] === 1 && !(x === G.gate.x && y === G.gate.y)) tiles.push([x, y]);
+        if (G.grid[y][x] === 1) tiles.push([x, y]);
       const walls = new THREE.InstancedMesh(new THREE.BoxGeometry(1, WALL_H, 1), std('#ffffff', { map: wallTex }), tiles.length);
       const m = new THREE.Matrix4();
       tiles.forEach(([x, y], i) => walls.setMatrixAt(i, m.makeTranslation(x + 0.5, WALL_H / 2, y + 0.5)));
@@ -222,23 +193,6 @@ export function createView3D(canvas) {
 
     }
 
-    // the gate, with one lock light per player on the side facing in
-    const gate = new THREE.Group();
-    gate.position.set(G.gate.x + 0.5, 0, G.gate.y + 0.5);
-    const gateMat = std('#5e35b1', { emissive: '#3a1d80', emissiveIntensity: 0.8 });
-    const door = new THREE.Mesh(new THREE.BoxGeometry(1, WALL_H, 1), gateMat); door.position.y = WALL_H / 2; gate.add(door);
-    const nx = G.gate.ix - G.gate.x, nz = G.gate.iy - G.gate.y;
-    const locks = [...G.players.values()].map(p => p.slot).sort().map((slot, i, all) => {
-      const l = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), glow('#1a1030'));
-      const perRow = Math.min(4, all.length), rows = Math.ceil(all.length / perRow), row = Math.floor(i / perRow);
-      const inRow = Math.min(perRow, all.length - row * perRow);
-      const along = (i % perRow - (inRow - 1) / 2) * 0.2, up = 0.75 - (row - (rows - 1) / 2) * 0.2;
-      l.position.set(nx * 0.52 + nz * along, up, nz * 0.52 + nx * along); l.userData.slot = slot;
-      gate.add(l); return l;
-    });
-    const gateLight = new THREE.PointLight('#b388ff', 1.2, 3, 1); gateLight.position.set(nx * 0.8, 0.8, nz * 0.8); gate.add(gateLight);
-    scene.add(gate);
-
     // your headlight: a narrow beam that reaches far plus a soft glow around you; walls cast shadows, so they block both
     const spot = new THREE.SpotLight('#ffe2b0', 9, R_FAR, CONE, 0.45, 1);
     spot.castShadow = true; spot.shadow.mapSize.set(1024, 1024); spot.shadow.camera.near = 0.05; spot.shadow.bias = -0.0015; spot.shadow.normalBias = 0.02;
@@ -247,64 +201,32 @@ export function createView3D(canvas) {
     near.castShadow = true; near.shadow.mapSize.set(256, 256); near.shadow.camera.near = 0.05; near.shadow.bias = -0.003;
     scene.add(near);
 
-    // players
+    // players. Name tags float above everyone you can see; your teammates' tags also show through walls
+    // (a frozen teammate's says so), so you can find them.
     const players = new Map();
     for (const [id, p] of G.players) {
-      const model = (p.char === 'roundhead' ? makeRoundhead : makeCarrot)(COLORS[p.slot]);
-      const top = p.char === 'roundhead' ? 1.2 : 1.0;
-      const tag = nameSprite(p.name, COLORS[p.slot]); tag.position.y = top + 0.05; model.add(tag);
-      const carried = makeKey(COLORS[p.slot], 0.7); carried.position.set(0, top + 0.25, 0); carried.visible = false; model.add(carried);
-      scene.add(model);
-      players.set(id, { model, tag, carried });
+      const model = makePerson(p.char, COLORS[p.slot], p.slot);
+      const bits = addTagBits(model, p.role);
+      const tag = nameSprite(p.role === 'it' ? `${p.name} · IT` : p.name, p.role === 'it' ? '#ff6b6b' : COLORS[p.slot]);
+      const tagFz = nameSprite(`❄ ${p.name} · frozen`, '#9fe3ff');
+      scene.add(model, tag, tagFz);
+      players.set(id, { model, tag, tagFz, ...bits, rp: 0 });
     }
 
-    // your key (only you can see it), and the entity
-    const key = makeKey(COLORS[G.slot]); key.visible = false; scene.add(key);
-    // one model per entity there can be in this game (more players, more entities)
-    const ents = [];
-    for (let k = 0; k < Sh.entityCount(Sh.C.MAX_PLAYERS); k++) {
-      const body = new THREE.Group(), blobs = [];
-      for (let i = 0; i < 8; i++) {
-        const b = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), std(i % 2 ? '#07020a' : '#1c0618', { roughness: 0.4 }));
-        b.castShadow = true; body.add(b); blobs.push(b);
-      }
-      const eyes = new THREE.Group();
-      for (const z of [-0.12, 0.12]) { const e = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), glow('#ff1744')); e.position.set(0, 0, z); eyes.add(e); }
-      const light = new THREE.PointLight('#ff1744', 0, 2.2, 1); body.add(light);
-      body.visible = eyes.visible = false;
-      scene.add(body, eyes);
-      ents.push({ body, blobs, eyes, light, stun: null });
+    S = { G, apt, forest, players, spot, near };
+
+    // the office is all clay (the people already are): a softer color grade,
+    // and (on computers) soft shadows wherever things touch. It also needs a longer view, to see outside.
+    const clayMap = G.map === 'office';
+    if (clayMap) clayifyScene(scene);
+    renderer.toneMapping = clayMap ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+    renderer.toneMappingExposure = 0.95;
+    camera.far = clayMap ? 75 : 40; camera.updateProjectionMatrix();
+    if (clayMap && !lowPower) {
+      fx = createClayFX(renderer, scene, camera);
+      const size = renderer.getSize(new THREE.Vector2());
+      fx.setSize(size.x, size.y, dpr);
     }
-
-    // safe zones are rebuilt whenever they move
-    const zoneGroup = new THREE.Group(); scene.add(zoneGroup);
-    const zoneFill = glow('#50e696', { transparent: true, opacity: 0.2, depthWrite: false });
-    const zoneLine = new THREE.LineBasicMaterial({ color: '#69f0ae', transparent: true });
-    const nextLine = new THREE.LineDashedMaterial({ color: '#69f0ae', dashSize: 0.2, gapSize: 0.2, transparent: true, opacity: 0.6 });
-
-    S = { G, apt, forest, players, key, ents, gate, gateMat, door, locks, gateLight, spot, near, zoneGroup, zoneFill, zoneLine, nextLine, zoneSig: '' };
-  }
-
-  function square(x, y, inset, mat) {
-    const a = x - 1 + inset, b = x + 2 - inset, c = y - 1 + inset, d = y + 2 - inset, h = 0.03;
-    const geo = new THREE.BufferGeometry().setFromPoints([[a, c], [b, c], [b, d], [a, d], [a, c]].map(([px, pz]) => new THREE.Vector3(px, h, pz)));
-    const line = new THREE.Line(geo, mat); line.computeLineDistances(); line.renderOrder = 5;
-    return line;
-  }
-  function rebuildZones(G) {
-    const sig = JSON.stringify([G.zones, G.next]);
-    if (sig === S.zoneSig) return;
-    S.zoneSig = sig;
-    for (const c of [...S.zoneGroup.children]) { S.zoneGroup.remove(c); c.geometry.dispose(); }
-    const tile = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-    for (const z of G.zones) {
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-        if (G.grid[z.y + dy][z.x + dx] !== 0) continue;
-        const f = new THREE.Mesh(tile.clone(), S.zoneFill); f.position.set(z.x + dx + 0.5, 0.012, z.y + dy + 0.5); S.zoneGroup.add(f);
-      }
-      S.zoneGroup.add(square(z.x, z.y, 0.05, S.zoneLine));
-    }
-    for (const z of G.next) { const l = square(z.x, z.y, 0.1, S.nextLine); l.userData.next = true; S.zoneGroup.add(l); }
   }
 
   // f: everything needed for this frame, prepared by client.js
@@ -319,7 +241,8 @@ export function createView3D(canvas) {
     const lamp = new THREE.Vector3(vx + dir.x * 0.22, eye + 0.06 + vh, vz + dir.z * 0.22);
     S.spot.position.copy(lamp); S.near.position.set(vx, Math.min(WALL_H - 0.1, Math.max(1.0, eye + 0.35)) + vh, vz); // just above the head
     S.spot.target.position.set(lamp.x + dir.x * 4, lamp.y + Math.tan(f.mode === 'fps' ? f.pitch : 0) * 4 - 0.25, lamp.z + dir.z * 4);
-    S.spot.intensity = 9 * f.flicker; S.near.intensity = 1.6 * (0.5 + 0.5 * f.flicker);
+    const lampK = G.bright ? 0.12 : 1; // with the lights on, your headlight barely adds anything
+    S.spot.intensity = 9 * f.flicker * lampK; S.near.intensity = 1.6 * (0.5 + 0.5 * f.flicker) * lampK;
 
     // camera
     let back = 0;
@@ -336,69 +259,39 @@ export function createView3D(canvas) {
     // players
     for (const [id, o] of S.players) {
       const p = f.players.get(id);
-      if (!p) { o.model.visible = false; continue; }
+      if (!p) { o.model.visible = o.tag.visible = o.tagFz.visible = false; continue; }
       const firstPersonBody = f.mode === 'fps' && id === view.id;
       const sameFloor = Sh.floorOf(G.floors, p.x) === Sh.floorOf(G.floors, view.x); // other floors are out of sight
-      o.model.visible = sameFloor && p.show && !firstPersonBody && !(p.inv && Math.floor(t * 10) % 2);
-      o.tag.visible = sameFloor && id !== view.id;
-      o.model.position.set(p.x / TILE, (p.h || 0) * WALL_H, p.y / TILE);
-      o.model.rotation.y = -p.a;
-      // fade your own carrot when a wall pushes the third-person camera right up behind it
+      o.model.visible = sameFloor && p.show && !firstPersonBody && !(p.imm && Math.floor(t * 10) % 2);
+      const showTag = sameFloor && id !== view.id && (p.show || p.mark);
+      o.tag.visible = showTag && !p.fz; o.tagFz.visible = showTag && p.fz;
+      const px = p.x / TILE, py = (p.h || 0) * WALL_H, pz = p.y / TILE;
+      o.model.position.set(px, py, pz); o.model.rotation.y = -p.a;
+      o.tag.position.set(px, py + 1.32, pz); o.tagFz.position.copy(o.tag.position);
+      // fade your own person when a wall pushes the third-person camera right up behind them
       const fade = f.mode === 'tpp' && id === view.id && back < 1 ? 0.3 : 1;
       if (o.model.userData.fade !== fade) {
         o.model.userData.fade = fade;
-        o.model.traverse(c => { if (c.isMesh) { c.material.transparent = fade < 1; c.material.opacity = fade; } });
+        o.model.traverse(c => { if (c.isMesh && !c.userData.noFade) { c.material.transparent = fade < 1; c.material.opacity = fade; } });
       }
       const { body, legs, arms } = o.model.userData;
-      if (arms) { arms[0].rotation.z = -Math.sin(p.walk) * 0.5; arms[1].rotation.z = Math.sin(p.walk) * 0.5; }
+      arms[0].rotation.z = -Math.sin(p.walk) * 0.5; arms[1].rotation.z = Math.sin(p.walk) * 0.5;
       body.position.y = p.walk ? Math.abs(Math.cos(p.walk)) * 0.04 : 0;
       body.rotation.x = p.walk ? Math.sin(p.walk * 0.5) * 0.06 : 0;
       legs[0].rotation.z = Math.sin(p.walk) * 0.6; legs[1].rotation.z = -Math.sin(p.walk) * 0.6;
-      o.carried.visible = p.ks === 'carried';
-      o.carried.rotation.y = t * 2;
+      // tag bits: the tagger's ring pulses; ice while frozen, and the unfreeze ring fills up as a friend helps
+      o.ring.material.opacity = 0.55 + 0.45 * Math.sin(t * 6);
+      o.ice.visible = p.fz;
+      if (p.fz && p.rp > 0) {
+        const q = Math.round(p.rp * 20) / 20;
+        if (q !== o.rp) { o.rp = q; o.rescue.geometry.dispose(); o.rescue.geometry = new THREE.RingGeometry(0.4, 0.46, 40, 1, 0, Math.PI * 2 * Math.max(0.02, q)); }
+        o.rescue.visible = true;
+      } else o.rescue.visible = false;
     }
-
-    // your key, bobbing and turning
-    S.key.visible = !!f.key;
-    if (f.key) { S.key.position.set(f.key.x / TILE, 0.4 + Math.sin(t * 2) * 0.06, f.key.y / TILE); S.key.rotation.y = t * 1.5; }
-
-    // the entity: its body shows only in your light, its glowing eyes whenever there's a clear line to it
-    S.ents.forEach((m, k) => {
-      const E = f.ents.find(e => e.id === k);
-      m.body.visible = !!(E && E.lit); m.eyes.visible = !!(E && E.eyes);
-      m.light.intensity = E && E.lit ? 1.2 : 0;
-      if (!E) return;
-      const te = t + k * 1.7, ex = E.x / TILE, ez = E.y / TILE;
-      const eh = (E.h || 0) * WALL_H;
-      m.body.position.set(ex, 0.5 + eh, ez);
-      m.blobs.forEach((b, i) => {
-        const a = te * 2.5 + i * 0.8, r = 0.8 + 0.25 * Math.sin(te * 5 + i);
-        b.position.set(Math.cos(a) * 0.17, Math.sin(te * 3 + i) * 0.12 + (i % 3) * 0.12 - 0.1, Math.sin(a) * 0.17); b.scale.setScalar(r);
-      });
-      const toCam = Math.atan2(camera.position.z - ez, camera.position.x - ex), blink = Math.sin(te * 0.9) > 0.97 ? 0.3 : 1;
-      m.eyes.position.set(ex + Math.cos(toCam) * 0.3, 0.68 + eh, ez + Math.sin(toCam) * 0.3);
-      m.eyes.rotation.y = -toCam; m.eyes.scale.set(1, blink, 1);
-      if (m.stun !== E.stun) { m.stun = E.stun; m.body.traverse(o => { if (o.material) { o.material.transparent = E.stun; o.material.opacity = E.stun ? 0.5 : 1; } }); }
-    });
-
-    // gate
-    const open = G.gate.open;
-    S.door.scale.set(open ? 0.6 : 1, 1, open ? 0.6 : 1);
-    S.gateMat.color.set(open ? '#ffd54f' : '#5e35b1'); S.gateMat.emissive.set(open ? '#ffb300' : '#3a1d80');
-    S.gateMat.emissiveIntensity = open ? 0.8 + 0.4 * Math.sin(t * 6) : 0.8;
-    S.gateMat.transparent = open; S.gateMat.opacity = open ? 0.55 : 1;
-    S.gateLight.color.set(open ? '#ffd54f' : '#b388ff');
-    for (const l of S.locks) { l.visible = !open; l.material.color.set(G.gate.ins.includes(l.userData.slot) ? COLORS[l.userData.slot] : '#1a1030'); }
-
-    // safe zones blink when they're about to move; the dashed outlines preview where they go next
-    rebuildZones(G);
-    const warn = G.zt < Sh.C.SAFE_WARN, blinkK = warn ? 0.35 + 0.35 * Math.sin(t * 14) : 0.55;
-    S.zoneFill.opacity = 0.2 * blinkK + 0.08; S.zoneLine.opacity = Math.min(1, blinkK + 0.2);
-    for (const c of S.zoneGroup.children) if (c.userData.next) c.visible = warn;
 
     if (S.apt) updateApartment(S.apt, f, t);
     if (S.forest) updateForest(S.forest, f, t, camera);
-    renderer.render(scene, camera);
+    if (fx) fx.render(); else renderer.render(scene, camera);
   }
 
   return { build, render, resize, get ready() { return !!S; } };

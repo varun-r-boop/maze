@@ -191,7 +191,7 @@ export function buildApartment(scene, G, WALL_H) {
 
   // walls
   const wallTiles = [];
-  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (G.grid[y][x] === 1 && !(x === G.gate.x && y === G.gate.y)) wallTiles.push([x, y]);
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) if (G.grid[y][x] === 1) wallTiles.push([x, y]);
   const walls = new THREE.InstancedMesh(new THREE.BoxGeometry(1, WALL_H, 1), std('#ffffff', { map: TEX.wall() }), wallTiles.length);
   wallTiles.forEach(([x, y], i) => walls.setMatrixAt(i, m4.makeTranslation(x + 0.5, WALL_H / 2, y + 0.5)));
   walls.castShadow = walls.receiveShadow = true;
