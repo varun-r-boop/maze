@@ -106,11 +106,14 @@ function onMsg(m) {
       break;
     case 'lobby':
       room.host = m.host; room.players = m.players; room.state = m.state; room.map = m.map || 'building'; room.roundTime = m.roundTime || room.roundTime;
-      if (m.state === 'lobby') { ui = 'lobby'; G = null; renderLobby(); }
+      if (m.state === 'lobby') {
+        if (document.pointerLockElement) document.exitPointerLock();
+        ui = 'lobby'; G = null; exploreExit.hidden = true; renderLobby();
+      }
       else if (ui === 'ended') renderEnd();
       break;
     case 'start':
-      initGame(m); ui = 'play'; overlay.classList.add('hidden');
+      initGame(m); ui = 'play'; overlay.classList.add('hidden'); exploreExit.hidden = !G.explore;
       break;
     case 's': if (G) applySnapshot(m); break;
     case 'tp': if (G) {
@@ -171,7 +174,7 @@ function renderHome() {
 
 function renderLobby() {
   overlay.classList.remove('hidden');
-  const isHost = room.host === myId, enough = room.players.length >= MIN_PLAYERS, taggers = Sh.taggerCount(room.players.length);
+  const isHost = room.host === myId, solo = room.players.length === 1, enough = solo || room.players.length >= MIN_PLAYERS, taggers = Sh.taggerCount(room.players.length);
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   const links = local && lan.length ? lan.map(u => `${u}/?room=${room.code}`) : [`${location.origin}${location.pathname}?room=${room.code}`];
   panel.innerHTML = `
@@ -186,7 +189,8 @@ function renderLobby() {
     </div>
     <h3>Players (${room.players.length}/${MAX_PLAYERS})</h3>
     <ul class="plist">${room.players.map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}<em>${(CHARS.find(c => c[0] === p.char) || CHARS[0])[1]}</em>${p.id === room.host ? '<em>host</em>' : ''}${p.id === myId ? '<em>you</em>' : ''}</li>`).join('')}</ul>
-    ${isHost ? `<button class="go" id="start" ${enough ? '' : 'disabled'}>Start round</button><p class="note">${enough ? `${taggers} random player${taggers > 1 ? 's' : ''} will be IT; the other ${room.players.length - taggers} will run.` : `Freeze tag needs at least ${MIN_PLAYERS} players. Send your friends the invite link.`}</p>`
+    ${isHost ? (solo ? `<button class="go" id="start">Explore the map</button><p class="note">You're on your own, so there's no tagger and no clock: just walk around the map. Freeze tag needs at least ${MIN_PLAYERS} players, so send your friends the invite link to play.</p>`
+             : `<button class="go" id="start" ${enough ? '' : 'disabled'}>Start round</button><p class="note">${enough ? `${taggers} random player${taggers > 1 ? 's' : ''} will be IT; the other ${room.players.length - taggers} will run.` : `Freeze tag needs at least ${MIN_PLAYERS} players. Send your friends the invite link.`}</p>`)
              : `<p class="sub">Waiting for the host to start…</p>`}
     ${musicButton()}`;
   panel.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(b));
@@ -235,7 +239,7 @@ let aim = Sh.START_YAW; // where your headlight points (map-space angle)
 function initGame(m) {
   const meInfo = m.players.find(p => p.id === m.you);
   G = {
-    grid: m.grid, n: m.players.length, roundTime: m.roundTime, hold: m.hold,
+    grid: m.grid, n: m.players.length, roundTime: m.roundTime, hold: m.hold, explore: !!m.explore,
     floors: m.floors || [{ x0: 0, x1: COLS - 1 }], stairs: m.stairs || [], floor: -1,
     map: m.map || 'building', flights: m.flights || [], rooms: m.rooms || [], furniture: m.furniture || [], doors: m.doors || [], forest: m.forest || null, office: m.office || null, bright: !!m.office, fade: 0,
     players: new Map(), me: { x: meInfo.x, y: meInfo.y }, slot: meInfo.slot, role: meInfo.role, tpSeq: 0,
@@ -275,12 +279,18 @@ addEventListener('keydown', e => {
   keys.add(e.code);
   if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
   if (e.code === 'KeyM' && !e.repeat) setMusic(!musicOn);
+  if (e.code === 'KeyL' && !e.repeat && G && G.explore && ui === 'play') leaveExplore();
   if (e.code === 'KeyV' && !e.repeat && G && ui === 'play') {
     const i = VIEWS.findIndex(v => v[0] === viewMode);
     setView(VIEWS[(i + 1) % VIEWS.length][0]);
   }
 });
 addEventListener('keyup', e => keys.delete(e.code));
+
+// exploring on your own: a button (and the L key) takes you back to the lobby
+const exploreExit = document.getElementById('exploreExit');
+function leaveExplore() { send({ t: 'lobby' }); }
+exploreExit.onclick = leaveExplore;
 addEventListener('pointerdown', () => { if (musicOn && music.paused) music.play().catch(() => {}); });
 addEventListener('blur', () => keys.clear());
 
@@ -852,14 +862,16 @@ function drawStatus(meP) {
   ctx.font = 'bold 14px system-ui'; ctx.fillStyle = COLORS[meP.slot];
   ctx.fillText(meP.name, x + 14, y + 20);
   let status, col;
-  if (it) { status = G.time < G.hold ? 'IT · WAIT' : 'IT'; col = '#ff5252'; }
+  if (G.explore) { status = 'EXPLORING'; col = '#69f0ae'; }
+  else if (it) { status = G.time < G.hold ? 'IT · WAIT' : 'IT'; col = '#ff5252'; }
   else if (meP.fz) { status = 'FROZEN'; col = '#7fd4ff'; }
   else if (meP.imm) { status = 'SAFE FOR A MOMENT'; col = '#b388ff'; }
   else { status = 'RUNNER'; col = '#69f0ae'; }
   ctx.font = 'bold 12px system-ui'; ctx.fillStyle = col; ctx.textAlign = 'right'; ctx.fillText(status, x + w - 10, y + 20); ctx.textAlign = 'left';
   ctx.font = '13px system-ui'; ctx.fillStyle = '#e8e6f0';
   let hint;
-  if (it) hint = G.time < G.hold ? `Get ready… you can move in ${Math.ceil(G.hold - G.time)}s` : `Touch runners to freeze them · frozen so far: ${meP.tags}`;
+  if (G.explore) hint = isTouch ? 'Walk around and look at the map' : 'Walk around and look at the map · L to leave';
+  else if (it) hint = G.time < G.hold ? `Get ready… you can move in ${Math.ceil(G.hold - G.time)}s` : `Touch runners to freeze them · frozen so far: ${meP.tags}`;
   else if (meP.fz) hint = meP.rp > 0 ? `A friend is unfreezing you… ${Math.round(meP.rp * 100)}%` : 'Wait for a friend to stand next to you';
   else hint = 'Stand next to frozen friends to unfreeze them';
   ctx.fillText(hint, x + 14, y + 44);
@@ -890,12 +902,16 @@ function drawHud(t) {
   ctx.strokeStyle = '#2c2a40'; ctx.lineWidth = 1; ctx.stroke();
   ctx.font = `bold ${W < 480 ? 12 : 14}px system-ui`; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
   const cy = 24, cols = [bx + bw * 0.17, bx + bw * 0.5, bx + bw * 0.83];
+  if (G.explore) {
+    ctx.fillStyle = '#69f0ae'; ctx.fillText(`Exploring · ${Sh.MAPS.find(mp => mp[0] === G.map)?.[1] || G.map}`, bx + bw / 2, cy);
+  } else {
   ctx.fillStyle = G.role === 'it' ? '#ff5252' : '#69f0ae'; ctx.fillText(G.role === 'it' ? "YOU'RE IT" : 'RUNNER', cols[0], cy);
   const runners = [...G.players.values()].filter(p => p.role === 'run'), free = runners.filter(p => !p.fz).length;
   ctx.fillStyle = '#c9e9ff'; ctx.fillText(`Free runners ${free}/${runners.length}`, cols[1], cy);
   const left = Math.max(0, G.roundTime - G.time), m = Math.floor(left / 60), s = Math.floor(left % 60);
   ctx.fillStyle = left < 15 && Math.sin(t * 10) > 0 ? '#ff5252' : '#ffe9a8';
   ctx.fillText(G.time < G.hold ? `Taggers in ${Math.ceil(G.hold - G.time)}` : `${m}:${String(s).padStart(2, '0')} left`, cols[2], cy);
+  }
 
   // which view you're in, and how to switch
   ctx.font = '12px system-ui'; ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = 'rgba(201,198,218,.75)';

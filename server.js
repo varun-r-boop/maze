@@ -88,12 +88,16 @@ function handle(c, m) {
     }
     case 'start':
       if (r && r.host === c.id && r.state !== 'play') {
-        if (r.clients.size < MIN_PLAYERS) return send(c.ws, { t: 'msg', text: `Freeze tag needs at least ${MIN_PLAYERS} players.`, color: '#ffab91', dur: 3 });
-        startGame(r);
+        if (r.clients.size < MIN_PLAYERS && r.clients.size !== 1) return send(c.ws, { t: 'msg', text: `Freeze tag needs at least ${MIN_PLAYERS} players.`, color: '#ffab91', dur: 3 });
+        startGame(r); // on your own you just explore the map
+
       }
       break;
-    case 'lobby':
-      if (r && r.host === c.id && r.state === 'ended') { r.state = 'lobby'; r.game = null; broadcastLobby(r); }
+    case 'lobby': // back to the lobby after a round, or out of exploring on your own
+      if (r && r.host === c.id && (r.state === 'ended' || (r.state === 'play' && r.game.explore))) {
+        clearInterval(r.timer); r.timer = null;
+        r.state = 'lobby'; r.game = null; broadcastLobby(r);
+      }
       break;
     case 'pos':
       if (r && r.state === 'play') onPos(r, c, m);
@@ -145,7 +149,7 @@ function leave(c) {
 // ---------------------------------------------------------------- a round
 function startGame(r) {
   const cl = [...r.clients.values()].sort((a, b) => a.slot - b.slot);
-  const n = cl.length;
+  const n = cl.length, explore = n === 1; // alone: no taggers and no clock, just a map to walk around
   const level = Sh.genLevel(r.map), grid = level.grid;
   const links = Sh.stairLinks(level.stairs);
   const open = (x, y) => grid[y][x] === 0;
@@ -153,7 +157,7 @@ function startGame(r) {
   let maxD = 0; for (const v of dSpawn) if (v > maxD) maxD = v;
 
   // roles: random taggers; runners start at the map's spawn, taggers far away from them (and from each other)
-  const taggers = new Set(shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
+  const taggers = new Set(explore ? [] : shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
   const far = [];
   for (const k of [0.6, 0]) { // (anywhere reachable, if no spot is that far away)
     for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) if (open(x, y) && dSpawn[I(x, y)] > maxD * k) far.push({ x, y });
@@ -169,7 +173,7 @@ function startGame(r) {
   const now = Date.now();
   let runnerIdx = 0, taggerIdx = 0;
   const g = {
-    time: 0, roundTime: r.roundTime, grid, floors: level.floors, stairs: level.stairs, links,
+    time: 0, roundTime: r.roundTime, explore, grid, floors: level.floors, stairs: level.stairs, links,
     stairAt: new Map(level.stairs.map(s => [I(s.x, s.y), s])),
     players: cl.map(c => {
       const it = taggers.has(c.id), spot = it ? taggerSpots[taggerIdx++] : { x: level.spawns[runnerIdx][0], y: level.spawns[runnerIdx++][1] };
@@ -185,10 +189,11 @@ function startGame(r) {
   r.game = g; r.state = 'play'; r.last = now;
   const roster = g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, char: p.char, role: p.role, x: p.x, y: p.y }));
   const deco = { flights: level.flights || [], rooms: level.rooms || [], furniture: level.furniture || [], doors: level.doors || [], forest: level.forest || null, office: level.office || null };
-  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD });
+  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, explore });
   broadcastLobby(r);
   const its = g.players.filter(p => p.role === 'it'), names = its.map(p => p.name).join(' and ');
-  for (const p of g.players) {
+  if (explore) tell(r, g.players[0], 'Exploring on your own: no taggers, no clock. Invite friends to play freeze tag.', '#69f0ae', 5);
+  else for (const p of g.players) {
     if (p.role === 'it') tell(r, p, `You're IT${its.length > 1 ? ` (with ${its.filter(o => o !== p).map(o => o.name).join(', ')})` : ''}! Freeze every runner before time runs out.`, '#ff5252', 5);
     else tell(r, p, `${names} ${its.length > 1 ? 'are' : 'is'} IT! Run. Unfreeze frozen friends by standing next to them.`, '#69f0ae', 5);
   }
@@ -267,6 +272,7 @@ function tick(r) {
 function checkWin(r) {
   if (r.state !== 'play') return;
   const g = r.game, runners = g.players.filter(p => p.role === 'run');
+  if (g.explore) return; // nothing to win; it lasts until you go back to the lobby or leave
   if (!g.players.some(p => p.role === 'it')) return endGame(r, 'run', 'The taggers left.');
   if (!runners.length) return endGame(r, 'it', 'All the runners left.');
   if (runners.every(p => p.frozen)) return endGame(r, 'it', 'Every runner is frozen.');

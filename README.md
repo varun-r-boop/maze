@@ -9,6 +9,7 @@ Everyone has a headlight, and walls block it, so you only see what's in your lin
 - Runners get a 5-second head start. Then a tagger who touches a runner **freezes** them, and frozen runners can't move.
 - A free runner who stands next to a frozen one for 0.75 seconds **unfreezes** them. They can't be tagged for 2 seconds afterwards.
 - **Taggers win** if every runner is frozen before time runs out. **Runners win** if at least one is still free when the timer ends.
+- **On your own?** If you're the only one in the room, the button says **Explore the map**: you walk around the chosen map with no tagger and no clock. Press **L** or the **← Lobby** button to go back.
 - The host picks the map and the round length (1, 2, 3, 5 or 8 minutes) in the lobby. "Play again" picks new taggers.
 - Runners always see where the other runners are (frozen ones are marked with ❄), so they can go and rescue them. Taggers only show up when you can actually see them. When a tagger gets close you hear a heartbeat and the chase music.
 
