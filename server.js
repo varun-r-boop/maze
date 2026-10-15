@@ -6,8 +6,8 @@ const os = require('os');
 const { WebSocketServer } = require('ws');
 const Sh = require('./public/shared.js');
 
-const { TILE, COLS, ROWS, PLAYER_SPEED, PLAYER_R, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, TAG_DIST, RESCUE_DIST, RESCUE_TIME,
-  IMMUNE, HOLD, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT, TRAP_STEP, TRAP_COOLDOWN, NOISE_RADIUS, JUMP_T, JUMP_REST,
+const { TILE, COLS, ROWS, PLAYER_SPEED, PLAYER_R, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, TAG_DIST, RESCUE_DIST,
+  IMMUNE, HOLD, ACT_COOLDOWN, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT, TRAP_STEP, TRAP_COOLDOWN, NOISE_RADIUS, JUMP_T, JUMP_REST,
   SCULPT_TIME, HIDE_TIME, FIND_DIST, FIND_POINTS, FIND_BONUS, HIDDEN_POINTS } = Sh.C;
 const { I, center, tileOf, dist, rand } = Sh;
 const PORT = Number(process.env.PORT) || 3000;
@@ -89,15 +89,21 @@ function handle(c, m) {
     }
     case 'start':
       if (r && r.host === c.id && r.state !== 'play') {
-        if (r.clients.size < MIN_PLAYERS) return send(c.ws, { t: 'msg', text: `This needs at least ${MIN_PLAYERS} players.`, color: '#ffab91', dur: 3 });
-        startGame(r);
+        if (r.clients.size < MIN_PLAYERS && r.clients.size !== 1) return send(c.ws, { t: 'msg', text: `This needs at least ${MIN_PLAYERS} players.`, color: '#ffab91', dur: 3 });
+        startGame(r); // on your own you just explore the map
       }
       break;
-    case 'lobby':
-      if (r && r.host === c.id && r.state === 'ended') { r.state = 'lobby'; r.game = null; broadcastLobby(r); }
+    case 'lobby': // back to the lobby after a round, or out of exploring on your own
+      if (r && r.host === c.id && (r.state === 'ended' || (r.state === 'play' && r.game.explore))) {
+        clearInterval(r.timer); r.timer = null;
+        r.state = 'lobby'; r.game = null; broadcastLobby(r);
+      }
       break;
     case 'pos':
       if (r && r.state === 'play') onPos(r, c, m);
+      break;
+    case 'act': // left click / Space / the on-screen button: tag a runner, or unfreeze a friend
+      if (r && r.state === 'play') onAct(r, c);
       break;
     case 'map': // the host picks the map in the lobby
       if (r && r.host === c.id && r.state !== 'play' && Sh.MAPS.some(m2 => m2[0] === m.map)) { r.map = m.map; broadcastLobby(r); }
@@ -152,15 +158,15 @@ function leave(c) {
 // ---------------------------------------------------------------- a round
 function startGame(r) {
   const cl = [...r.clients.values()].sort((a, b) => a.slot - b.slot);
-  const n = cl.length;
+  const n = cl.length, explore = n === 1; // alone: no taggers and no clock, just a map to walk around
   const level = Sh.genLevel(r.map), grid = level.grid;
   const links = Sh.stairLinks(level.stairs);
   const reach = Sh.reach(level, level.spawns[0][0], level.spawns[0][1]), dSpawn = reach.d, N = reach.N;
   let maxD = 0; for (const v of dSpawn) if (v > maxD) maxD = v;
 
   // roles: random taggers; runners start at the map's spawn, taggers far away from them (and from each other)
-  const clayMode = r.mode === 'clay';
-  const taggers = new Set(clayMode ? [] : shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
+  const clayMode = r.mode === 'clay' && !explore; // (on your own you explore, whichever mode is picked)
+  const taggers = new Set(explore || clayMode ? [] : shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
   const far = [];
   for (const k of [0.6, 0]) { // (anywhere reachable, if no spot is that far away; never on a staircase)
     reach.grids.forEach((gr, fl) => {
@@ -178,14 +184,14 @@ function startGame(r) {
   const now = Date.now();
   let runnerIdx = 0, taggerIdx = 0;
   const g = {
-    mode: clayMode ? 'clay' : 'tag', time: 0, roundTime: r.roundTime, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
+    mode: clayMode ? 'clay' : 'tag', time: 0, roundTime: r.roundTime, explore, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
     stairAt: new Map(level.stairs.map(s => [I(s.x, s.y), s])),
     players: cl.map(c => {
       const it = taggers.has(c.id), spot = it ? taggerSpots[taggerIdx++] : { x: level.spawns[runnerIdx][0], y: level.spawns[runnerIdx++][1] };
       return {
         id: c.id, slot: c.slot, name: c.name, char: c.char, role: clayMode ? 'clay' : it ? 'it' : 'run', score: 0, finds: 0, target: null,
         x: center(spot.x), y: center(spot.y), fl: spot.fl || 0, yaw: level.yaw ?? Sh.START_YAW, jumps: 0, airUntil: 0,
-        frozen: false, immune: 0, rescue: 0, rescuer: null, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now,
+        frozen: false, immune: 0, nextAct: 0, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now,
       };
     }),
   };
@@ -198,13 +204,14 @@ function startGame(r) {
   const roster = g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, char: p.char, role: p.role, x: p.x, y: p.y, fl: p.fl }));
   const deco = { flights: level.flights || [], rooms: level.rooms || [], furniture: level.furniture || [], doors: level.doors || [], forest: level.forest || null, office: level.office || null, mall: level.mall || null, bright: !!level.bright,
     upper: level.upper || null, ramps: level.ramps || [], library: level.library || null };
-  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, mode: g.mode, phase: g.phase, sculptTime: SCULPT_TIME, traps: g.traps.map(({ id, x, y, fl, kind }) => ({ id, x, y, fl, kind })) });
+  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, mode: g.mode, phase: g.phase, sculptTime: SCULPT_TIME, traps: g.traps.map(({ id, x, y, fl, kind }) => ({ id, x, y, fl, kind })), explore });
   broadcastLobby(r);
   const its = g.players.filter(p => p.role === 'it'), names = its.map(p => p.name).join(' and ');
-  if (clayMode) note(r, 'Sculpt your clay! Then you will hide it, and hunt for someone else\'s.', '#ffe9a8', 5);
+  if (explore) tell(r, g.players[0], 'Exploring on your own: no taggers, no clock. Invite friends to play.', '#69f0ae', 5);
+  else if (clayMode) note(r, 'Sculpt your clay! Then you will hide it, and hunt for someone else\'s.', '#ffe9a8', 5);
   else for (const p of g.players) {
-    if (p.role === 'it') tell(r, p, `You're IT${its.length > 1 ? ` (with ${its.filter(o => o !== p).map(o => o.name).join(', ')})` : ''}! Freeze every runner before time runs out.`, '#ff5252', 5);
-    else tell(r, p, `${names} ${its.length > 1 ? 'are' : 'is'} IT! Run. Unfreeze frozen friends by standing next to them.`, '#69f0ae', 5);
+    if (p.role === 'it') tell(r, p, `You're IT${its.length > 1 ? ` (with ${its.filter(o => o !== p).map(o => o.name).join(', ')})` : ''}! Catch the runners and tag them.`, '#ff5252', 5);
+    else tell(r, p, `${names} ${its.length > 1 ? 'are' : 'is'} IT! Run, and unfreeze your friends.`, '#69f0ae', 5);
   }
   r.timer = setInterval(() => tick(r), TICK_MS);
 }
@@ -241,6 +248,31 @@ function teleport(r, p, x, y, a) { // `a`: face this way afterwards (used by sta
   if (c) send(c.ws, { t: 'tp', x, y, s: p.tpSeq, a, f: p.fl });
 }
 
+// Tagging and unfreezing happen on a click (or Space, or the on-screen button), not just by bumping into
+// someone: a tagger freezes the nearest free runner within reach; a free runner unfreezes the nearest frozen one.
+function onAct(r, c) {
+  const g = r.game, p = g.players.find(p => p.id === c.id);
+  if (!p || p.frozen || g.time < p.nextAct) return;
+  p.nextAct = g.time + ACT_COOLDOWN; // no machine-gun clicking
+  const near = (want, reach) => g.players.filter(o => o !== p && want(o) && sameFloor(g, o, p) && dist(o, p) <= reach)
+    .sort((a, b) => dist(a, p) - dist(b, p))[0];
+  if (p.role === 'it') {
+    if (g.time < HOLD) return;
+    const v = near(o => o.role === 'run' && !o.frozen && o.immune <= 0, TAG_DIST);
+    if (!v) return;
+    v.frozen = true; v.timesFrozen++; p.tags++;
+    teleport(r, v, v.x, v.y); // pin them where they were tagged
+    note(r, `${p.name} froze ${v.name}!`, '#7fd4ff');
+  } else {
+    const v = near(o => o.role === 'run' && o.frozen, RESCUE_DIST);
+    if (!v) return;
+    v.frozen = false; v.immune = IMMUNE; p.saves++;
+    note(r, `${p.name} unfroze ${v.name}!`, '#69f0ae');
+  }
+  checkWin(r);
+  if (r.state === 'play') sendSnapshots(r);
+}
+
 // ---------------------------------------------------------------- simulation
 // on the same floor: in the library, within half a floor of each other (so two people half way up a staircase count)
 const sameFloor = (g, a, b) => g.upper ? Math.abs(Sh.elev(g, a) - Sh.elev(g, b)) < 0.5 : Sh.floorOf(g.floors, a.x) === Sh.floorOf(g.floors, b.x);
@@ -263,26 +295,8 @@ function tick(r) {
   }
 
   if (g.mode === 'clay') { clayTick(r, dt); if (r.state === 'play') sendSnapshots(r); return; }
-  const runners = g.players.filter(p => p.role === 'run'), its = g.players.filter(p => p.role === 'it');
-  stepOnTraps(r, runners, dt);
-  // taggers freeze any free runner they touch
-  if (g.time >= HOLD) for (const T of its) for (const p of runners) {
-    if (p.frozen || p.immune > 0 || !sameFloor(g, T, p) || dist(T, p) > TAG_DIST) continue;
-    p.frozen = true; p.rescue = 0; p.timesFrozen++; T.tags++;
-    teleport(r, p, p.x, p.y); // pin them where they were tagged
-    note(r, `${T.name} froze ${p.name}!`, '#7fd4ff');
-  }
-  // a free runner standing next to a frozen one thaws them out, bit by bit
-  for (const p of runners) {
-    if (!p.frozen) continue;
-    const helper = runners.find(o => !o.frozen && sameFloor(g, o, p) && dist(o, p) <= RESCUE_DIST);
-    p.rescuer = helper ? helper.id : null;
-    p.rescue = helper ? p.rescue + dt / RESCUE_TIME : Math.max(0, p.rescue - dt / RESCUE_TIME);
-    if (p.rescue >= 1) {
-      p.frozen = false; p.rescue = 0; p.rescuer = null; p.immune = IMMUNE; helper.saves++;
-      note(r, `${helper.name} unfroze ${p.name}!`, '#69f0ae');
-    }
-  }
+  const runners = g.players.filter(p => p.role === 'run');
+  if (!g.explore) stepOnTraps(r, runners, dt);
   checkWin(r);
   if (r.state === 'play') sendSnapshots(r);
 }
@@ -329,6 +343,7 @@ function stepOnTraps(r, runners, dt) {
 function checkWin(r) {
   if (r.state !== 'play') return;
   const g = r.game, runners = g.players.filter(p => p.role === 'run');
+  if (g.explore) return; // nothing to win; it lasts until you go back to the lobby or leave
   if (!g.players.some(p => p.role === 'it')) return endGame(r, 'run', 'The taggers left.');
   if (!runners.length) return endGame(r, 'it', 'All the runners left.');
   if (runners.every(p => p.frozen)) return endGame(r, 'it', 'Every runner is frozen.');
@@ -358,7 +373,7 @@ function sendSnapshots(r) {
     time: g.time, tc: g.traps.filter(t => t.cd > 0).map(t => t.id), // traps that just went off
     players: g.players.map(p => ({
       id: p.id, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.yaw * 100) / 100,
-      fz: p.frozen, imm: p.immune > 0, rp: Math.round(p.rescue * 100) / 100, tags: p.tags, f: p.fl, j: p.jumps, sc: Math.floor(p.score),
+      fz: p.frozen, imm: p.immune > 0, tags: p.tags, f: p.fl, j: p.jumps, sc: Math.floor(p.score),
     })),
   };
   if (g.mode === 'clay') Object.assign(shared, { ph: g.phase, left: Math.max(0, Math.round((g.phaseEnd - g.time) * 10) / 10) });

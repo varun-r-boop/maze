@@ -5,9 +5,9 @@
     PLAYER_SPEED: 165, PLAYER_R: 12, MAX_PLAYERS: 12, MIN_PLAYERS: 2,
     // freeze tag
     TAGGER_SPEED: 1.1,   // taggers move this much faster than runners
-    TAG_DIST: 30,        // px: how close a tagger has to get to freeze a runner
-    RESCUE_DIST: 46,     // px: how close a free runner has to stand to unfreeze a frozen one...
-    RESCUE_TIME: 0.75,   // ...and for how many seconds
+    TAG_DIST: 44,        // px: how close a tagger has to be to freeze a runner with a click
+    RESCUE_DIST: 48,     // px: how close a free runner has to be to unfreeze a frozen one with a click
+    ACT_COOLDOWN: 0.35,  // seconds between clicks that count
     IMMUNE: 2,           // seconds a runner can't be tagged after being unfrozen
     HOLD: 5,             // seconds at the start when taggers can't move yet (the runners scatter)
     DANGER_DIST: 7,      // tiles: runners hear the heartbeat when a tagger is this close

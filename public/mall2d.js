@@ -1,5 +1,6 @@
 // Top-down look of the mall: a polished promenade with a fountain, glass shopfronts with name signs, each shop's
 // own floor and fixtures, the food court and the staff corridors behind the shops.
+import { drawDefined } from './outline2d.js';
 const Sh = window.Shared;
 const { TILE, COLS, ROWS } = Sh.C;
 
@@ -217,7 +218,7 @@ export function drawMallMap(m, G) {
     m.fillStyle = '#4a4f58'; m.fillRect(px, py + 13, TILE, 1.5); m.fillRect(px, py + 25.5, TILE, 1.5);
   }
   // fixtures and furniture
-  for (const it of M.items) drawItem(m, it);
+  drawDefined(m, l => { for (const it of M.items) drawItem(l, it); });
   // each shop's name on a colored sign over its shopfront
   for (const r of M.rooms) {
     if (r.type !== 'shop') continue;

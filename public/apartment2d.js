@@ -1,4 +1,5 @@
 // Top-down look of the apartment map: room floors, walls with windows, stairs, furniture and swinging doors.
+import { drawDefined } from './outline2d.js';
 const Sh = window.Shared;
 const { TILE, COLS, ROWS } = Sh.C;
 
@@ -73,7 +74,7 @@ export function drawApartmentMap(m, G) {
     m.fillText(f.up ? (f.dir < 0 ? '▲' : '▼') : '⤓', ex, ey);
     m.font = 'bold 9px system-ui'; m.fillText(f.up ? 'UP' : 'DOWN', ex, ey + 13);
   }
-  for (const f of G.furniture) drawFurniture(m, f);
+  drawDefined(m, l => { for (const f of G.furniture) drawFurniture(l, f); });
 }
 
 function shadeHex(hex, k) {

@@ -1,6 +1,7 @@
 // Top-down look of the office map: carpet, stone, wood and tile floors by room, white walls, windows along the
 // outside, glass-walled meeting rooms, and the furniture (desk pods, meeting tables, yellow sofas, lockers,
 // filing cabinets with plants, kitchen, toilets...).
+import { drawDefined } from './outline2d.js';
 const Sh = window.Shared;
 const { TILE, COLS, ROWS } = Sh.C;
 
@@ -236,7 +237,7 @@ export function drawOfficeMap(m, G) {
     m.fillStyle = '#2a2d33'; m.fillRect(px, py + 14, TILE, 1.5); m.fillRect(px, py + 24.5, TILE, 1.5);
   }
   // furniture
-  for (const it of O.items) if (it.type !== 'pendant') drawItem(m, it);
+  drawDefined(m, l => { for (const it of O.items) if (it.type !== 'pendant') drawItem(l, it); }, { shadow: 'rgba(30,30,40,.35)' });
 }
 
 // drawn on top every frame (above the dimming): the big dome lamps hanging over the lounge
