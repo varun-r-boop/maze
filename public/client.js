@@ -963,27 +963,33 @@ function gateState() {
   return { state: G.esc.open ? 'open' : meP.u ? 'mine' : meP.k ? 'key' : 'locked', done: ps.filter(p => p.u).length, total: ps.length };
 }
 const GATE_COLORS = { open: '#69f0ae', mine: '#ffd54f', key: '#ffd54f', locked: '#ff5252' };
-// the bot: a clunky clay robot with a glowing red visor, and a tagger's red ring at its feet
+// the bot: a black ghost with glowing red eyes, floating over the floor, the hem of its sheet rippling
 function drawBot(c, x, y, flip, walk, t) {
-  const s = Math.sin(walk) * 2.5, bob = walk ? Math.abs(Math.cos(walk)) * 1.5 : 0, ink = 'rgba(20,20,30,.6)';
+  const float = Math.sin(t * 2.5) * 3, wave = t * 6 + walk;
   c.save(); c.translate(x, y);
-  c.fillStyle = 'rgba(0,0,0,.35)'; c.beginPath(); c.ellipse(0, 15, 12, 4.5, 0, 0, Math.PI * 2); c.fill();
-  c.scale(flip * 1.25, 1.25); c.translate(0, -bob - 2);
-  c.lineCap = 'round'; c.lineJoin = 'round';
-  c.strokeStyle = '#3c4150'; c.lineWidth = 4.5; // legs
-  c.beginPath(); c.moveTo(-3.5, 4); c.lineTo(-4 + s, 12.5); c.moveTo(3.5, 4); c.lineTo(4 - s, 12.5); c.stroke();
-  c.strokeStyle = '#555c6e'; c.lineWidth = 3.5; // arms
-  c.beginPath(); c.moveTo(-8, -7); c.lineTo(-10 - s * 0.5, 3); c.moveTo(8, -7); c.lineTo(10 + s * 0.5, 3); c.stroke();
-  c.fillStyle = clayFill(c, 0, -3, 12, '#6b7285'); c.strokeStyle = ink; c.lineWidth = 1.2; // body, with a light on its chest
-  roundRect(c, -8.5, -10, 17, 15, 4); c.fill(); c.stroke();
-  c.fillStyle = Math.sin(t * 6) > 0 ? '#ff5252' : '#8a2323'; c.beginPath(); c.arc(0, -3, 2, 0, Math.PI * 2); c.fill();
-  c.fillStyle = clayFill(c, 0, -19, 9, '#7d8497'); c.strokeStyle = ink; // head
-  roundRect(c, -8, -27, 16, 13, 4); c.fill(); c.stroke();
-  c.shadowColor = '#ff2a2a'; c.shadowBlur = 10; c.fillStyle = '#ff3b3b'; roundRect(c, -1, -23.5, 9, 4.5, 2); c.fill(); c.shadowBlur = 0; // visor
-  c.strokeStyle = '#3c4150'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(0, -27); c.lineTo(0, -32); c.stroke(); // antenna
-  c.fillStyle = '#ff5252'; c.beginPath(); c.arc(0, -33, 2, 0, Math.PI * 2); c.fill();
+  // a faint red glow on the floor under it, shrinking as it rises
+  const sh = c.createRadialGradient(0, 14, 1, 0, 14, 16);
+  sh.addColorStop(0, `rgba(160,0,0,${0.45 - float * 0.04})`); sh.addColorStop(1, 'rgba(160,0,0,0)');
+  c.fillStyle = sh; c.beginPath(); c.ellipse(0, 14, 16, 6, 0, 0, Math.PI * 2); c.fill();
+  c.scale(flip * 1.25, 1.25); c.translate(0, float - 6);
+  // the sheet: a round head, straight sides, and a wavy hem
+  c.beginPath(); c.moveTo(-11, 8); c.lineTo(-11, -14); c.arc(0, -14, 11, Math.PI, 0); c.lineTo(11, 8);
+  for (let i = 4; i > 0; i--) { // four scallops back along the hem, swaying
+    const x0 = -11 + i * 5.5, xm = x0 - 2.75, dip = 4 + Math.sin(wave + i * 1.7) * 1.8;
+    c.quadraticCurveTo(xm, 8 + dip * 2 - 4, x0 - 5.5, 8);
+  }
+  c.closePath();
+  const body = c.createRadialGradient(-3, -18, 2, 0, -6, 22);
+  body.addColorStop(0, '#2a2530'); body.addColorStop(0.5, '#0d0b10'); body.addColorStop(1, '#030304');
+  c.shadowColor = 'rgba(140,0,20,.75)'; c.shadowBlur = 14; c.fillStyle = body; c.fill();
+  c.shadowBlur = 0; c.strokeStyle = 'rgba(90,70,110,.55)'; c.lineWidth = 1; c.stroke();
+  // red eyes on the side it faces, flaring now and then
+  const glow = 0.8 + 0.2 * Math.sin(t * 9);
+  c.shadowColor = '#ff1a1a'; c.shadowBlur = 10 * glow; c.fillStyle = `rgba(255,${30 + 40 * glow | 0},30,1)`;
+  c.beginPath(); c.ellipse(1.5, -15, 2.1, 3, -0.15, 0, Math.PI * 2); c.ellipse(7, -15, 2.1, 3, 0.15, 0, Math.PI * 2); c.fill();
+  c.shadowBlur = 0; c.fillStyle = '#fff2f2';
+  c.beginPath(); c.arc(2, -16, 0.6, 0, Math.PI * 2); c.arc(7.5, -16, 0.6, 0, Math.PI * 2); c.fill(); // glints
   c.restore();
-  drawTagMarks({ role: 'it' }, x, y, t);
 }
 // your key: gold, glowing, bobbing over the floor
 function drawKey(x, y, t) {
