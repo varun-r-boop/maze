@@ -87,7 +87,7 @@ addEventListener('resize', () => { if (v3d) v3d.resize(W, H, DPR); });
 
 // ---------------------------------------------------------------- networking
 let ws, myId = null, lan = [], ui = 'home', homeError = '';
-const room = { code: null, host: null, players: [], state: null, map: 'building', roundTime: Sh.C.ROUND_DEFAULT };
+const room = { code: null, host: null, players: [], state: null, map: 'building', roundTime: Sh.C.ROUND_DEFAULT, mode: 'tag' };
 let G = null; // current game, client side
 const queue = [];
 
@@ -109,7 +109,7 @@ function onMsg(m) {
       homeError = m.msg; renderHome();
       break;
     case 'lobby':
-      room.host = m.host; room.players = m.players; room.state = m.state; room.map = m.map || 'building'; room.roundTime = m.roundTime || room.roundTime;
+      room.host = m.host; room.players = m.players; room.state = m.state; room.map = m.map || 'building'; room.roundTime = m.roundTime || room.roundTime; room.mode = m.mode || 'tag';
       if (m.state === 'lobby') { ui = 'lobby'; G = null; renderLobby(); }
       else if (ui === 'ended') renderEnd();
       break;
@@ -124,9 +124,17 @@ function onMsg(m) {
     } break;
     case 'msg': if (G) addMsg(m.text, m.color, m.dur); break;
     case 'noise': if (G) onNoise(m); break;
+    // hide clay
+    case 'cs': if (G) G.sculptDone = m; break;
+    case 'phase': if (G) onPhase(m); break;
+    case 'placed': if (G) onPlaced(m); break;
+    case 'target': if (G) onTarget(m); break;
+    case 'found': if (G) onFound(m); break;
+    case 'gone': if (G) G.objs.delete(m.id); break;
     case 'end':
       if (document.pointerLockElement) document.exitPointerLock();
       chase.pause(); chase.currentTime = 0;
+      closeSculpt(); actBtn.style.display = 'none';
       if (G) { G.result = m; ui = 'ended'; renderEnd(); }
       break;
   }
@@ -158,6 +166,7 @@ function renderHome() {
       <li>It's dark: you only see what your headlight shows, and walls block it. Runners always know where their teammates are; taggers only show up when you can see them. Listen for the heartbeat: a tagger is close.</li>
       <li><b>Top-down, PC:</b> move with WASD or the arrow keys; your headlight points the way you walk. <b>Phone:</b> drag anywhere to move.</li>
       <li><b>First / third person, PC:</b> click the game to look around with the mouse (Esc frees it). W/S walk, A/D step sideways, ←/→ or Q/E turn. <b>Phone:</b> drag up/down to walk, left/right to turn.</li>
+      <li><b>Hide clay</b> (a second game mode): everyone sculpts something out of clay, then hides it somewhere on the map. Then everyone is given someone else's sculpture to find. Find it fast for points; your own sculpture earns points for every second it stays hidden. <b>F</b> hides your sculpture and picks up the one you're hunting.</li>
       <li>Press <b>Space</b> to jump (or double-tap on a phone). Jump over a noise trap and it stays quiet.</li>
       <li>Press <b>V</b> during a game to switch views, and <b>M</b> to turn the music on or off.</li>
     </ul></details>`;
@@ -188,17 +197,19 @@ function renderLobby() {
     ${links.map(l => `<div class="linkrow"><input readonly value="${esc(l)}"><button data-copy="${esc(l)}">Copy</button></div>`).join('')}
     ${local ? `<p class="note">You're playing on <b>localhost</b>, so the link above is your local-network address. It works for friends on the same Wi-Fi. For friends elsewhere, use a tunnel link instead (see README).</p>` : ''}
     <div style="margin-top:18px">${charPicker()}${viewPicker()}
+      <label>Game mode${isHost ? '' : ' (the host picks)'}</label><div class="seg">${Sh.MODES.map(([k, n]) => `<button data-mode="${k}" class="${k === room.mode ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${n}</button>`).join('')}</div>
       <label>Map${isHost ? '' : ' (the host picks)'}</label><div class="seg">${Sh.MAPS.map(([k, n]) => `<button data-map="${k}" class="${k === room.map ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${n}</button>`).join('')}</div>
-      <label>Round length${isHost ? '' : ' (the host picks)'}</label><div class="seg">${ROUND_TIMES.map(s => `<button data-time="${s}" class="${s === room.roundTime ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${s / 60} min</button>`).join('')}</div>
+      <label>${room.mode === 'clay' ? 'Hunt length' : 'Round length'}${isHost ? '' : ' (the host picks)'}</label><div class="seg">${ROUND_TIMES.map(s => `<button data-time="${s}" class="${s === room.roundTime ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${s / 60} min</button>`).join('')}</div>
     </div>
     <h3>Players (${room.players.length}/${MAX_PLAYERS})</h3>
     <ul class="plist">${room.players.map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}<em>${(CHARS.find(c => c[0] === p.char) || CHARS[0])[1]}</em>${p.id === room.host ? '<em>host</em>' : ''}${p.id === myId ? '<em>you</em>' : ''}</li>`).join('')}</ul>
-    ${isHost ? `<button class="go" id="start" ${enough ? '' : 'disabled'}>Start round</button><p class="note">${enough ? `${taggers} random player${taggers > 1 ? 's' : ''} will be IT; the other ${room.players.length - taggers} will run.` : `Freeze tag needs at least ${MIN_PLAYERS} players. Send your friends the invite link.`}</p>`
+    ${isHost ? `<button class="go" id="start" ${enough ? '' : 'disabled'}>Start round</button><p class="note">${!enough ? `You need at least ${MIN_PLAYERS} players. Send your friends the invite link.` : room.mode === 'clay' ? `Everyone sculpts something out of clay (${Sh.C.SCULPT_TIME / 60} min), hides it (${Sh.C.HIDE_TIME}s), then hunts for someone else's.` : `${taggers} random player${taggers > 1 ? 's' : ''} will be IT; the other ${room.players.length - taggers} will run.`}</p>`
              : `<p class="sub">Waiting for the host to start…</p>`}
     ${musicButton()}`;
   panel.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(b));
   bindViewPicker(); bindMusicButton(); bindCharPicker();
   if (isHost) panel.querySelectorAll('[data-map]').forEach(b => b.onclick = () => send({ t: 'map', map: b.dataset.map }));
+  if (isHost) panel.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => send({ t: 'mode', mode: b.dataset.mode }));
   if (isHost) panel.querySelectorAll('[data-time]').forEach(b => b.onclick = () => send({ t: 'time', time: Number(b.dataset.time) }));
   if (isHost) document.getElementById('start').onclick = () => { ensureAudio(); send({ t: 'start' }); };
 }
@@ -211,6 +222,7 @@ function copy(btn) {
 }
 
 function renderEnd() {
+  if (G.result.mode === 'clay') return renderClayEnd();
   const r = G.result, isHost = room.host === myId, meP = G.players.get(myId);
   const m = Math.floor(r.time / 60), s = Math.floor(r.time % 60);
   const iWon = meP && meP.role === r.winner;
@@ -244,6 +256,7 @@ function initGame(m) {
   G = {
     grid: m.grid, n: m.players.length, roundTime: m.roundTime, hold: m.hold,
     floors: m.floors || [{ x0: 0, x1: COLS - 1 }], stairs: m.stairs || [], floor: -1,
+    mode: m.mode || 'tag', phase: m.phase || null, left: m.sculptTime || 0, sculptTime: m.sculptTime || 0, objs: new Map(), target: null, canFind: false, sculptDone: null,
     upper: m.upper || null, ramps: m.ramps || [], library: m.library || null, fl: meInfo.fl || 0, jumpT: -1, rest: 0, jc: 0, sentJ: 0,
     map: m.map || 'building', flights: m.flights || [], rooms: m.rooms || [], furniture: m.furniture || [], doors: m.doors || [], forest: m.forest || null, office: m.office || null, mall: m.mall || null, bright: !!m.bright, fade: 0,
     players: new Map(), me: { x: meInfo.x, y: meInfo.y }, slot: meInfo.slot, role: meInfo.role, tpSeq: 0,
@@ -258,6 +271,8 @@ function initGame(m) {
   G.doorOpen = new Float32Array(G.doors.length);
   renderMaps();
   if (v3d) v3d.build(G);
+  closeSculpt();
+  if (G.mode === 'clay' && G.phase === 'sculpt') startSculpt();
 }
 
 function applySnapshot(s) {
@@ -265,18 +280,19 @@ function applySnapshot(s) {
   const hot = new Set(s.tc || []); // traps that just went off
   for (const t of G.traps) t.hot = hot.has(t.id);
   G.time = s.time; G.danger = s.danger;
+  if (s.ph) { G.phase = s.ph; G.left = s.left; }
   const seen = new Set();
   for (const sp of s.players) {
     const p = G.players.get(sp.id);
     if (!p) continue;
     seen.add(sp.id);
-    Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, rp: sp.rp, tags: sp.tags, fl: sp.f || 0 });
+    Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, rp: sp.rp, tags: sp.tags, fl: sp.f || 0, sc: sp.sc || 0 });
     if (sp.j > p.jc) { p.jc = sp.j; if (sp.id !== myId) p.jumpT = 0; } // they jumped
   }
   for (const id of [...G.players.keys()]) if (!seen.has(id)) G.players.delete(id); // someone left
   G.n = G.players.size;
 }
-const isTeammate = p => p.role === G.role;
+const isTeammate = p => G.mode !== 'clay' && p.role === G.role; // (in hide clay it's everyone for themselves)
 
 // a noise trap went off near you (or under you): show where, and play its sound (quieter the further away)
 function onNoise(m) {
@@ -298,6 +314,7 @@ addEventListener('keydown', e => {
   if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
   if (e.code === 'KeyM' && !e.repeat) setMusic(!musicOn);
   if (e.code === 'Space' && !e.repeat) jump();
+  if (e.code === 'KeyF' && !e.repeat) clayAction();
   if (e.code === 'KeyV' && !e.repeat && G && ui === 'play') {
     const i = VIEWS.findIndex(v => v[0] === viewMode);
     setView(VIEWS[(i + 1) % VIEWS.length][0]);
@@ -441,6 +458,7 @@ function update(dt) {
     p.walk = moving ? p.walk + dt * 12 : 0;
   }
   G.fade = Math.max(0, G.fade - dt * 2.2);
+  if (G.mode === 'clay') clayUpdate(dt);
   // jumps in progress (yours, and other people's)
   if (G.jumpT >= 0) { G.jumpT += dt; if (G.jumpT >= JUMP_T) { G.jumpT = -1; G.rest = JUMP_REST; } } else G.rest = Math.max(0, G.rest - dt);
   for (const p of G.players.values()) if (p.jumpT >= 0 && (p.jumpT += dt) >= JUMP_T) p.jumpT = -1;
@@ -473,7 +491,7 @@ function update(dt) {
   }
   if (ui !== 'play' || !meP) return;
   // frozen runners can't move (but can still turn and look around), and taggers wait out the head start
-  const stuck = meP.fz || (G.role === 'it' && G.time < G.hold);
+  const stuck = meP.fz || (G.role === 'it' && G.time < G.hold) || G.phase === 'sculpt';
   let mx, my;
   if (viewMode === 'top') {
     [mx, my] = inputVector();
@@ -816,7 +834,7 @@ function getView() { return { x: G.me.x, y: G.me.y, fl: G.fl, a: aim, id: myId }
 const posOf = (id, p) => id === myId ? { x: G.me.x, y: G.me.y, fl: G.fl } : { x: p.rx, y: p.ry, fl: p.fl };
 // how high someone is, in floors (the apartment's flights of stairs, or the library's floors and staircases)
 const heightAt = pos => G.upper ? Sh.elev(G, pos) : Sh.stairHeight(G.flights, pos.x, pos.y);
-const canSee = (view, id, p, pos) => id === myId || isLit(view, pos);
+const canSee = (view, id, p, pos) => id === myId || (!(G.mode === 'clay' && G.phase !== 'hunt') && isLit(view, pos));
 
 // first / third person: same visibility rules as top-down, drawn in 3D by view3d.js
 function draw3D(t) {
@@ -826,11 +844,12 @@ function draw3D(t) {
     const pos = posOf(id, p), self = id === myId;
     players.set(id, {
       ...pos, a: self ? aim : p.ra, walk: self ? G.walk : p.walk, role: p.role, fz: p.fz, imm: p.imm, rp: p.rp,
-      show: canSee(view, id, p, pos), mark: !self && isTeammate(p), h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * JUMP_3D,
+      show: canSee(view, id, p, pos) && !(G.mode === 'clay' && G.phase === 'sculpt'), mark: !self && isTeammate(p), h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * JUMP_3D,
     });
   }
   v3d.render({
     G, view, t, mode: viewMode, players, noises: G.noises,
+    clay: G.mode === 'clay' ? [...G.objs.values()].map(o => ({ ...o, show: o.x != null && (G.phase === 'hunt' || o.id === myId), fill: lumpColor((G.players.get(o.id) || { slot: 0 }).slot) })) : null,
     pitch, flicker: G.flicker, walk: G.walk, viewH: heightAt(view), viewJump: jumpK(G.jumpT) * JUMP_3D,
     backRoom: castRay(view.x, view.y, view.a + Math.PI, 2.2 * TILE), // room behind you for the third-person camera
   });
@@ -851,6 +870,7 @@ function drawWorld(t) {
   }
   if (G.doors.length) drawDoors2D(ctx, G);
   for (const tr of G.traps) if ((tr.fl || 0) === G.fl) drawTrap(tr, t);
+  if (G.mode === 'clay') for (const o of G.objs.values()) drawClayObj(o, view, t);
 
   // everyone you can see, sorted by y so characters lower on screen draw in front
   const actors = [];
@@ -951,6 +971,10 @@ function drawMinimap(x, y) {
     else { ctx.fillStyle = COLORS[p.slot]; ctx.beginPath(); ctx.arc(px, py, 2.2, 0, Math.PI * 2); ctx.fill(); }
   }
   ctx.globalAlpha = 1;
+  const mine = G.mode === 'clay' && G.objs.get(myId);
+  if (mine && mine.x != null && (mine.fl || 0) === G.fl) { // your sculpture: a little star
+    ctx.fillStyle = '#ffe9a8'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★', mine.x / TILE * MINI, mine.y / TILE * MINI);
+  }
   for (const n of G.noises) if (Math.floor(n.t * 6) % 2) { // noises you heard, flashing
     ctx.fillStyle = '#ffb74d'; ctx.beginPath(); ctx.arc(n.x / TILE * MINI, n.y / TILE * MINI, 3.5, 0, Math.PI * 2); ctx.fill();
   }
@@ -1012,6 +1036,7 @@ function drawHud(t) {
     ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
   }
   drawMinimap(W - COLS * MINI - 10, 50);
+  if (G.mode === 'clay') { drawClayHud(meP, t); drawHudFooter(); return; }
   drawStatus(meP);
 
   // top bar: your role, how many runners are still free, and the time left
@@ -1026,7 +1051,11 @@ function drawHud(t) {
   const left = Math.max(0, G.roundTime - G.time), m = Math.floor(left / 60), s = Math.floor(left % 60);
   ctx.fillStyle = left < 15 && Math.sin(t * 10) > 0 ? '#ff5252' : '#ffe9a8';
   ctx.fillText(G.time < G.hold ? `Taggers in ${Math.ceil(G.hold - G.time)}` : `${m}:${String(s).padStart(2, '0')} left`, cols[2], cy);
+  drawHudFooter();
+}
 
+// the bottom-right hints, messages and the touch joystick (both game modes)
+function drawHudFooter() {
   // which view you're in, and how to switch
   ctx.font = '12px system-ui'; ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = 'rgba(201,198,218,.75)';
   const vName = VIEWS.find(v => v[0] === viewMode)[1];
@@ -1046,6 +1075,153 @@ function drawHud(t) {
     ctx.beginPath(); ctx.arc(joy.ox, joy.oy, 50, 0, Math.PI * 2); ctx.stroke();
     const dx = joy.x - joy.ox, dy = joy.y - joy.oy, l = Math.hypot(dx, dy), k = l > 50 ? 50 / l : 1;
     ctx.fillStyle = 'rgba(255,255,255,.3)'; ctx.beginPath(); ctx.arc(joy.ox + dx * k, joy.oy + dy * k, 20, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+// ---------------------------------------------------------------- hide clay
+// sculpt (the sculpting screen) → hide (walk round unseen, F puts your sculpture down) → hunt (find the one you're given)
+const sculptHost = document.getElementById('sculpt'), actBtn = document.getElementById('act');
+let clayLib = null, sculptUI = null;
+const loadClay = () => clayLib || (clayLib = import('./clayobj.js'));
+const lumpColor = slot => (slot * 5) % Sh.CLAY_COLORS.length; // the color your lump starts out
+const ownerName = id => (G.players.get(id) || { name: 'someone' }).name;
+actBtn.onclick = () => clayAction();
+
+function startSculpt() {
+  sculptHost.classList.remove('hidden');
+  if (document.pointerLockElement) document.exitPointerLock();
+  const t0 = performance.now(), total = G.sculptTime;
+  import('./sculpt.js').then(mod => {
+    if (!G || G.phase !== 'sculpt') return;
+    sculptUI = mod.openSculpt(sculptHost, {
+      fill: lumpColor(G.slot), deadline: () => total - (performance.now() - t0) / 1000,
+      status: () => G && G.sculptDone ? `${G.sculptDone.done} of ${G.sculptDone.total} done` : '',
+      onDone: data => send({ t: 'sculpt', ...data }),
+    });
+  }).catch(e => { console.error(e); closeSculpt(); if (G) addMsg("Couldn't open the sculpting screen: you'll get a plain lump of clay.", '#ffab91', 4); });
+}
+function closeSculpt() { if (sculptUI) { sculptUI.close(); sculptUI = null; } sculptHost.classList.add('hidden'); }
+
+function onPhase(m) {
+  G.phase = m.phase; G.left = m.left;
+  if (m.phase === 'hide') { // everyone's sculptures arrive (but not where they'll be hidden)
+    if (sculptUI) sculptUI.finish(); // (in case yours hadn't been sent yet)
+    closeSculpt();
+    for (const o of m.objs) G.objs.set(o.id, { id: o.id, data: o.data, x: null, y: null, fl: 0, found: false, by: null, thumb: null });
+    loadClay().then(L => { for (const o of G.objs.values()) o.thumb = L.thumbnail(o.data, lumpColor((G.players.get(o.id) || { slot: 0 }).slot)); }).catch(e => console.error(e));
+  }
+  if (m.phase === 'hunt') for (const o of m.objs) { const ob = G.objs.get(o.id); if (ob) Object.assign(ob, { x: o.x, y: o.y, fl: o.fl }); }
+}
+function onPlaced(m) {
+  const mine = G.objs.get(myId);
+  if (mine) Object.assign(mine, { x: m.x, y: m.y, fl: m.f ?? m.fl ?? 0 });
+  addMsg('Hidden! Press F again to move it somewhere else.', '#9be7c4', 2.5);
+}
+function onTarget(m) {
+  G.target = m.id;
+  addMsg(m.id ? `Find ${ownerName(m.id)}'s sculpture!` : "Nothing left for you to find. Your sculpture keeps scoring while it's hidden.", '#ffe9a8', 3);
+}
+function onFound(m) {
+  const o = G.objs.get(m.owner);
+  if (o) { o.found = true; o.by = m.by; }
+  if (m.by === myId) { addMsg(`You found it! +${m.pts}`, '#69f0ae', 3); playNoise('squeak', 0.8); }
+  else if (m.owner === myId) addMsg(`${ownerName(m.by)} found your sculpture!`, '#ffab91', 3);
+}
+// F (or the round button on a phone): put your sculpture down, or pick up the one you're hunting
+function clayAction() {
+  if (!G || G.mode !== 'clay' || ui !== 'play') return;
+  if (G.phase === 'hide') send({ t: 'place' });
+  else if (G.phase === 'hunt' && G.canFind) send({ t: 'find' });
+}
+function clayUpdate(dt) {
+  G.left = Math.max(0, G.left - dt);
+  const o = G.phase === 'hunt' && G.target && G.objs.get(G.target);
+  G.canFind = !!(o && o.x != null && !o.found && (o.fl || 0) === G.fl && dist(G.me, o) <= Sh.C.FIND_DIST * TILE && isLit(getView(), o));
+  const label = ui !== 'play' ? '' : G.phase === 'hide' ? 'Hide it here' : G.canFind ? 'Pick it up!' : '';
+  actBtn.style.display = isTouch && label ? 'block' : 'none';
+  if (actBtn.textContent !== label) actBtn.textContent = label;
+}
+
+// a sculpture on the floor (top-down): only your own while hiding; during the hunt, any you can see
+function drawClayObj(o, view, t) {
+  if (o.x == null || !o.thumb || (o.fl || 0) !== G.fl) return;
+  const mine = o.id === myId;
+  if (G.phase !== 'hunt' && !mine) return;
+  if (!mine && !isLit(view, o)) return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(o.x, o.y + 10, 13, 5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.drawImage(o.thumb, o.x - 19, o.y - 26, 38, 38);
+  if (o.found) { ctx.fillStyle = '#69f0ae'; ctx.beginPath(); ctx.arc(o.x + 14, o.y - 22, 7, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#0b2a1a'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('✓', o.x + 14, o.y - 21); }
+  else if (mine) nameTag('your sculpture', o.x, o.y + 26, '#ffe9a8');
+  else if (o.id === G.target && G.canFind) { ctx.strokeStyle = `rgba(105,240,174,${0.6 + 0.4 * Math.sin(t * 8)})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(o.x, o.y - 6, 26, 0, Math.PI * 2); ctx.stroke(); }
+  ctx.restore();
+}
+
+function drawClayHud(meP, t) {
+  const phaseCol = { sculpt: '#ffd54f', hide: '#b388ff', hunt: '#69f0ae' }[G.phase] || '#fff';
+  // the top bar: the phase, what's going on, the time left in this phase
+  const bw = Math.min(560, W - 20), bx = (W - bw) / 2;
+  ctx.fillStyle = 'rgba(10,10,20,.88)'; roundRect(ctx, bx, 8, bw, 32, 8); ctx.fill();
+  ctx.strokeStyle = '#2c2a40'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.font = `bold ${W < 480 ? 12 : 14}px system-ui`; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+  const cy = 24, cols = [bx + bw * 0.17, bx + bw * 0.5, bx + bw * 0.83], objs = [...G.objs.values()], mine = G.objs.get(myId);
+  ctx.fillStyle = phaseCol; ctx.fillText({ sculpt: 'SCULPT', hide: 'HIDE IT', hunt: 'HUNT' }[G.phase] || '', cols[0], cy);
+  ctx.fillStyle = '#c9e9ff';
+  ctx.fillText(G.phase === 'hunt' ? `Found ${objs.filter(o => o.found).length}/${objs.length}` : G.phase === 'hide' ? (mine && mine.x != null ? 'Yours is hidden ✓' : 'Not hidden yet') : 'Sculpting…', cols[1], cy);
+  const m = Math.floor(G.left / 60), s = Math.floor(G.left % 60);
+  ctx.fillStyle = G.left < 10 && Math.sin(t * 10) > 0 ? '#ff5252' : '#ffe9a8'; ctx.fillText(`${m}:${String(s).padStart(2, '0')} left`, cols[2], cy);
+
+  // the sculpture you're hunting, and the scores
+  let y = 50;
+  const tgt = G.phase === 'hunt' && G.target && G.objs.get(G.target);
+  if (tgt) {
+    ctx.fillStyle = 'rgba(10,10,20,.85)'; roundRect(ctx, 12, y, 124, 148, 10); ctx.fill();
+    ctx.strokeStyle = G.canFind ? '#69f0ae' : '#2c2a40'; ctx.lineWidth = G.canFind ? 2.5 : 1; ctx.stroke();
+    if (tgt.thumb) ctx.drawImage(tgt.thumb, 26, y + 6, 96, 96);
+    ctx.font = 'bold 12px system-ui'; ctx.fillStyle = '#ffe9a8'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText('FIND THIS', 74, y + 118); ctx.font = '12px system-ui'; ctx.fillStyle = '#c9c6da'; ctx.fillText(`${ownerName(G.target)}'s`, 74, y + 136);
+    y += 158;
+  }
+  if (G.phase === 'hunt') {
+    const list = [...G.players.values()].sort((a, b) => (b.sc || 0) - (a.sc || 0)).slice(0, 6);
+    ctx.fillStyle = 'rgba(10,10,20,.75)'; roundRect(ctx, 12, y, 124, 14 + list.length * 18, 8); ctx.fill();
+    ctx.font = '12px system-ui'; ctx.textBaseline = 'middle';
+    list.forEach((p, i) => {
+      ctx.textAlign = 'left'; ctx.fillStyle = COLORS[p.slot]; ctx.fillText(p.name.slice(0, 10), 22, y + 16 + i * 18);
+      ctx.textAlign = 'right'; ctx.fillStyle = '#e8e6f0'; ctx.fillText(p.sc || 0, 128, y + 16 + i * 18);
+    });
+  }
+
+  // the status box: your score and what to do now
+  const w = Math.min(340, W - 24), x = 12, by = H - 72;
+  ctx.fillStyle = 'rgba(10,10,20,.8)'; roundRect(ctx, x, by, w, 60, 8); ctx.fill();
+  ctx.fillStyle = phaseCol; ctx.fillRect(x, by, 4, 60);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.font = 'bold 14px system-ui'; ctx.fillStyle = COLORS[meP.slot]; ctx.fillText(meP.name, x + 14, by + 20);
+  ctx.font = 'bold 12px system-ui'; ctx.fillStyle = '#ffe9a8'; ctx.textAlign = 'right'; ctx.fillText(`SCORE ${meP.sc || 0}`, x + w - 10, by + 20); ctx.textAlign = 'left';
+  const key = isTouch ? 'the button' : 'F';
+  const hint = G.phase === 'sculpt' ? 'Sculpting… everyone hides theirs next'
+    : G.phase === 'hide' ? (mine && mine.x != null ? `Hidden! ${key} again moves it here` : `Find a sneaky spot and press ${key} to hide it`)
+    : !G.target ? 'Nothing left to find. Stay hidden, little sculpture!'
+    : G.canFind ? `It's right here! Press ${key} to pick it up` : 'Look for the sculpture in the picture';
+  ctx.font = '13px system-ui'; ctx.fillStyle = '#e8e6f0'; ctx.fillText(hint, x + 14, by + 44);
+}
+
+function renderClayEnd() {
+  const r = G.result, isHost = room.host === myId, won = r.winner.includes(myId);
+  const names = r.stats.filter(p => r.winner.includes(p.id)).map(p => esc(p.name)).join(' and ');
+  const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  overlay.classList.remove('hidden');
+  panel.innerHTML = `
+    <p class="result" style="color:${won ? '#69f0ae' : '#ffd54f'}">${names} ${r.winner.length > 1 ? 'WIN' : 'WINS'}!</p>
+    <p class="sub">${esc(r.reason)}${won ? ' · You won!' : ''}</p>
+    <ul class="plist">${[...r.stats].sort((a, b) => b.score - a.score).map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}
+      <em style="color:#ffe9a8">${p.score} pts</em>
+      <em>found ${p.finds} · theirs ${p.foundBy ? `was found by ${esc(p.foundBy)} after ${mmss(p.hidden)}` : `stayed hidden (${mmss(p.hidden)})`}</em></li>`).join('')}</ul>
+    ${isHost ? `<div class="row"><button class="go" id="again">Play again</button><button id="lobby">Back to lobby</button></div>`
+             : `<p class="sub">Waiting for the host…</p>`}`;
+  if (isHost) {
+    document.getElementById('again').onclick = () => send({ t: 'start' });
+    document.getElementById('lobby').onclick = () => send({ t: 'lobby' });
   }
 }
 

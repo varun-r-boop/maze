@@ -7,6 +7,8 @@ import { buildOffice } from './office3d.js';
 import { buildMall, updateMall } from './mall3d.js';
 import { buildLibrary, updateLibrary } from './library3d.js';
 import { clay, rbox, blob, clayifyScene, createClayFX, resetClay } from './clay.js';
+import { makeSculpture } from './clayobj.js';
+const SCULPTURE = 0.5; // hide clay: how big a sculpture is in the world (its longest side, in tiles)
 
 const Sh = window.Shared;
 const { TILE, COLS, ROWS } = Sh.C;
@@ -291,7 +293,7 @@ export function createView3D(canvas) {
     const pings = [];
     for (let i = 0; i < 6; i++) { const p = pingSprite(); scene.add(p); pings.push(p); }
 
-    S = { G, apt, forest, mall, library, players, spot, near, traps, pings, SH };
+    S = { G, apt, forest, mall, library, players, spot, near, traps, pings, SH, sculptures: new Map() };
 
     // the office and the mall are all clay (the people already are): a softer color grade,
     // and (on computers) soft shadows wherever things touch. It also needs a longer view, to see outside.
@@ -376,6 +378,21 @@ export function createView3D(canvas) {
       const k = n.t / Sh.C.NOISE_SHOW;
       p.position.set(n.x / TILE, 0.7 + (n.fl || 0) * S.SH, n.y / TILE); p.scale.setScalar(0.5 + 0.25 * Math.sin(t * 10)); p.material.opacity = k;
     });
+
+    // hide clay: the sculptures, once we know where they are (a green ring under one that's been found)
+    if (f.clay) for (const o of f.clay) {
+      let s = S.sculptures.get(o.id);
+      if (!s && o.x != null) {
+        const m = makeSculpture(o.data, o.fill, SCULPTURE), g = new THREE.Group(); g.add(m);
+        const ring = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.36, 32).rotateX(-Math.PI / 2), glow('#69f0ae', { transparent: true, opacity: 0.8 }));
+        ring.position.y = 0.02; ring.visible = false; g.add(ring);
+        g.rotation.y = (o.id * 2.3) % (Math.PI * 2); scene.add(g);
+        s = { g, ring }; S.sculptures.set(o.id, s);
+      }
+      if (!s) continue;
+      s.g.visible = o.show; s.g.position.set(o.x / TILE, (o.fl || 0) * S.SH, o.y / TILE);
+      s.ring.visible = o.found; if (o.found) s.ring.scale.setScalar(1 + 0.08 * Math.sin(t * 5));
+    }
 
     if (S.apt) updateApartment(S.apt, f, t);
     if (S.forest) updateForest(S.forest, f, t, camera);

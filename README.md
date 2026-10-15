@@ -16,6 +16,16 @@ Everyone has a headlight, and walls block it, so you only see what's in your lin
 
 The rules' numbers (tagger speed, unfreeze time, head start, round lengths...) are at the top of `public/shared.js`.
 
+## Hide clay (the other game mode)
+
+The host can switch the lobby's **Game mode** from Freeze tag to **Hide clay**:
+
+1. **Sculpt (2 minutes).** Everyone gets a lump of clay on a turntable and shapes it however they like. **Grab** drags bits of clay out (ears, arms, tails), **Pull** and **Push** build it up or press it in, **Smooth** softens it, and **Paint** colors it. **Mirror** makes both sides match. Drag the background to turn the clay; scroll or pinch to zoom. Press **I'm done** when you're happy (or it's sent when time runs out).
+2. **Hide (45 seconds).** Everyone walks the map, and nobody can see anyone else. Press **F** (on a phone, the round button) to put your sculpture down just in front of you. Press it again to move it.
+3. **Hunt (the round length).** Everyone goes back to the start and is shown someone else's sculpture to find. Walk up to it and press **F** to pick it up: that's 100 points, plus up to 150 more the sooner you find it. Then you're given another one to find. Your own sculpture earns you a point for every second it stays hidden.
+
+The round ends when time runs out or every sculpture has been found; the highest score wins. The timings and points are at the top of `public/shared.js`.
+
 ## Maps
 
 The host picks the map in the lobby:
@@ -73,6 +83,7 @@ It prints a `https://something.trycloudflare.com` address. Open that address you
 - `public/client.js`: lobby screens, the top-down view (2D canvas), line-of-sight lighting, the clay man and woman characters, heartbeat sound, HUD, keyboard/touch input. Vision settings (`R_NEAR`, `R_FAR`, `CONE`) are at the top. Your own movement runs locally so it feels instant, and the server checks it so nobody can walk through walls or teleport.
 - `public/view3d.js`: the first- and third-person views (with the characters modelled in clay), drawn with Three.js (served from `node_modules`, so run `npm install`). It only loads when someone picks a 3D view.
 - `public/clay.js`: the clay look used by the Office and the Mall in 3D: rounded, slightly lumpy shapes, a matte clay material with dents and fingerprints, soft contact shadows (ambient occlusion, skipped on phones), and helpers for placing pieces and building walls. `public/office3d.js` and `public/mall3d.js` build the two clay maps with it (`office2d.js` and `mall2d.js` draw them top-down). The library is the same: `library3d.js` and `library2d.js`.
+- `public/sculpt.js`: the hide-clay sculpting screen; `public/clayobj.js` turns a sculpture's data into a clay model (and little pictures of it for the top-down view).
 - `public/shared.js`: map generation (rooms, hallways and furniture), pathfinding and collision, used by both sides. Maps with two real floors (the library) have a second grid for the floor above and walkable staircases (`ramps`); everyone has a floor, and you're upstairs once you're past halfway up a staircase.
 
 Gameplay settings (speeds, tag and unfreeze distances, head start, round lengths) are at the top of `public/shared.js`.

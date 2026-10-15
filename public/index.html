@@ -41,12 +41,40 @@
   .seg button.on { background: #3a2a7a; border-color: #7c4dff; color: #fff; font-weight: 700; }
   #c.mode3d { cursor: crosshair; }
   .seg.chars canvas { position: static; display: block; margin: 0 auto 4px; width: 96px; height: 84px; }
+  /* hide clay: the sculpting screen */
+  #sculpt { position: fixed; inset: 0; z-index: 5; }
+  #sculpt.hidden { display: none; }
+  #sculpt .sc-canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #sculpt .sc-top, #sculpt .sc-bottom, #sculpt .sc-panel { position: absolute; background: rgba(16,15,26,.88); border: 1px solid #2c2a40; border-radius: 10px; padding: 8px 12px; box-sizing: border-box; }
+  #sculpt .sc-top { top: 10px; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 15px; }
+  #sculpt .sc-time { color: #ffe9a8; font-weight: 700; }
+  #sculpt .sc-status { color: #9be7c4; }
+  #sculpt .sc-panel { top: 56px; left: 10px; width: 228px; max-height: calc(100% - 130px); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  #sculpt .sc-tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  #sculpt .sc-tools button { padding: 8px 6px; }
+  #sculpt button.on { background: #3a2a7a; border-color: #7c4dff; color: #fff; font-weight: 700; }
+  #sculpt label { margin: 0; }
+  #sculpt input[type=range] { width: 100%; padding: 0; }
+  #sculpt .sc-colors { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; }
+  #sculpt .sc-colors button { height: 26px; padding: 0; border-radius: 6px; border: 2px solid rgba(0,0,0,.4); }
+  #sculpt .sc-colors button.on { border-color: #fff; box-shadow: 0 0 0 2px #7c4dff; }
+  #sculpt .sc-row { display: flex; gap: 6px; } #sculpt .sc-row button { flex: 1; padding: 7px 4px; }
+  #sculpt .sc-bottom { bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; align-items: center; width: min(720px, calc(100% - 20px)); }
+  #sculpt .sc-hint { flex: 1; color: #b9b5d6; font-size: 13px; }
+  @media (max-width: 640px) {
+    #sculpt .sc-panel { top: auto; bottom: 64px; left: 10px; right: 10px; width: auto; max-height: 40%; }
+    #sculpt .sc-hint { display: none; } #sculpt .sc-bottom { justify-content: center; }
+  }
+  /* hide clay: the action button on phones (place / pick up) */
+  #act { position: fixed; right: 18px; bottom: 96px; z-index: 4; width: 84px; height: 84px; border-radius: 50%; font-weight: 800; background: #7c4dff; border-color: #b39dff; display: none; }
 </style>
 </head>
 <body>
 <canvas id="gl"></canvas>
 <canvas id="c"></canvas>
 <div id="overlay"><div class="panel" id="panel"></div></div>
+<div id="sculpt" class="hidden"></div>
+<button id="act"></button>
 <script type="importmap">{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three-addons/" } }</script>
 <script src="shared.js"></script>
 <script type="module" src="client.js"></script>

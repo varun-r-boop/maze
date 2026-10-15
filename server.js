@@ -7,7 +7,8 @@ const { WebSocketServer } = require('ws');
 const Sh = require('./public/shared.js');
 
 const { TILE, COLS, ROWS, PLAYER_SPEED, PLAYER_R, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, TAG_DIST, RESCUE_DIST, RESCUE_TIME,
-  IMMUNE, HOLD, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT, TRAP_STEP, TRAP_COOLDOWN, NOISE_RADIUS, JUMP_T, JUMP_REST } = Sh.C;
+  IMMUNE, HOLD, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT, TRAP_STEP, TRAP_COOLDOWN, NOISE_RADIUS, JUMP_T, JUMP_REST,
+  SCULPT_TIME, HIDE_TIME, FIND_DIST, FIND_POINTS, FIND_BONUS, HIDDEN_POINTS } = Sh.C;
 const { I, center, tileOf, dist, rand } = Sh;
 const PORT = Number(process.env.PORT) || 3000;
 const TICK_MS = 50;
@@ -43,7 +44,7 @@ function lanUrls() {
 // ---------------------------------------------------------------- rooms & clients
 const rooms = new Map();
 let nextId = 1;
-const wss = new WebSocketServer({ server, maxPayload: 4096 });
+const wss = new WebSocketServer({ server, maxPayload: 256 * 1024 }); // (big enough for a clay sculpture)
 
 function send(ws, msg) { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); }
 function broadcast(r, msg) { const s = JSON.stringify(msg); for (const c of r.clients.values()) if (c.ws.readyState === 1) c.ws.send(s); }
@@ -70,7 +71,7 @@ function handle(c, m) {
   switch (m.t) {
     case 'create': {
       if (r) return;
-      const room = { code: genCode(), host: c.id, clients: new Map(), state: 'lobby', game: null, timer: null, map: 'building', roundTime: ROUND_DEFAULT };
+      const room = { code: genCode(), host: c.id, clients: new Map(), state: 'lobby', game: null, timer: null, map: 'building', roundTime: ROUND_DEFAULT, mode: 'tag' };
       rooms.set(room.code, room);
       c.char = cleanChar(m.char);
       join(c, room, m.name);
@@ -88,7 +89,7 @@ function handle(c, m) {
     }
     case 'start':
       if (r && r.host === c.id && r.state !== 'play') {
-        if (r.clients.size < MIN_PLAYERS) return send(c.ws, { t: 'msg', text: `Freeze tag needs at least ${MIN_PLAYERS} players.`, color: '#ffab91', dur: 3 });
+        if (r.clients.size < MIN_PLAYERS) return send(c.ws, { t: 'msg', text: `This needs at least ${MIN_PLAYERS} players.`, color: '#ffab91', dur: 3 });
         startGame(r);
       }
       break;
@@ -101,6 +102,12 @@ function handle(c, m) {
     case 'map': // the host picks the map in the lobby
       if (r && r.host === c.id && r.state !== 'play' && Sh.MAPS.some(m2 => m2[0] === m.map)) { r.map = m.map; broadcastLobby(r); }
       break;
+    case 'mode': // ...the game mode
+      if (r && r.host === c.id && r.state !== 'play' && Sh.MODES.some(m2 => m2[0] === m.mode)) { r.mode = m.mode; broadcastLobby(r); }
+      break;
+    case 'sculpt': if (r && r.state === 'play') onSculpt(r, c, m); break; // hide clay
+    case 'place': if (r && r.state === 'play') onPlace(r, c); break;
+    case 'find': if (r && r.state === 'play') onFind(r, c); break;
     case 'time': // ...and how long a round lasts
       if (r && r.host === c.id && r.state !== 'play' && ROUND_TIMES.includes(m.time)) { r.roundTime = m.time; broadcastLobby(r); }
       break;
@@ -123,7 +130,7 @@ function join(c, room, name) {
 
 function broadcastLobby(r) {
   const players = [...r.clients.values()].map(c => ({ id: c.id, name: c.name, slot: c.slot, char: c.char }));
-  broadcast(r, { t: 'lobby', code: r.code, host: r.host, state: r.state, map: r.map, roundTime: r.roundTime, players });
+  broadcast(r, { t: 'lobby', code: r.code, host: r.host, state: r.state, map: r.map, roundTime: r.roundTime, mode: r.mode, players });
 }
 
 function leave(c) {
@@ -137,7 +144,7 @@ function leave(c) {
     const g = r.game, p = g.players.find(p => p.id === c.id);
     g.players = g.players.filter(p => p.id !== c.id);
     if (p) note(r, `${p.name} left the round.`, '#ffab91', 3);
-    checkWin(r);
+    if (g.mode === 'clay') clayLeft(r, c.id); else checkWin(r);
   }
   broadcastLobby(r);
 }
@@ -152,7 +159,8 @@ function startGame(r) {
   let maxD = 0; for (const v of dSpawn) if (v > maxD) maxD = v;
 
   // roles: random taggers; runners start at the map's spawn, taggers far away from them (and from each other)
-  const taggers = new Set(shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
+  const clayMode = r.mode === 'clay';
+  const taggers = new Set(clayMode ? [] : shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
   const far = [];
   for (const k of [0.6, 0]) { // (anywhere reachable, if no spot is that far away; never on a staircase)
     reach.grids.forEach((gr, fl) => {
@@ -170,29 +178,31 @@ function startGame(r) {
   const now = Date.now();
   let runnerIdx = 0, taggerIdx = 0;
   const g = {
-    time: 0, roundTime: r.roundTime, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
+    mode: clayMode ? 'clay' : 'tag', time: 0, roundTime: r.roundTime, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
     stairAt: new Map(level.stairs.map(s => [I(s.x, s.y), s])),
     players: cl.map(c => {
       const it = taggers.has(c.id), spot = it ? taggerSpots[taggerIdx++] : { x: level.spawns[runnerIdx][0], y: level.spawns[runnerIdx++][1] };
       return {
-        id: c.id, slot: c.slot, name: c.name, char: c.char, role: it ? 'it' : 'run',
+        id: c.id, slot: c.slot, name: c.name, char: c.char, role: clayMode ? 'clay' : it ? 'it' : 'run', score: 0, finds: 0, target: null,
         x: center(spot.x), y: center(spot.y), fl: spot.fl || 0, yaw: level.yaw ?? Sh.START_YAW, jumps: 0, airUntil: 0,
         frozen: false, immune: 0, rescue: 0, rescuer: null, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now,
       };
     }),
   };
 
-  g.traps = placeTraps(level, reach);
+  g.traps = clayMode ? [] : placeTraps(level, reach);
+  if (clayMode) Object.assign(g, { phase: 'sculpt', phaseEnd: SCULPT_TIME + 3, sculpts: new Map(), objs: new Map(), spawns: level.spawns }); // (3s for the last sculptures to arrive)
 
   clearInterval(r.timer);
   r.game = g; r.state = 'play'; r.last = now;
   const roster = g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, char: p.char, role: p.role, x: p.x, y: p.y, fl: p.fl }));
   const deco = { flights: level.flights || [], rooms: level.rooms || [], furniture: level.furniture || [], doors: level.doors || [], forest: level.forest || null, office: level.office || null, mall: level.mall || null, bright: !!level.bright,
     upper: level.upper || null, ramps: level.ramps || [], library: level.library || null };
-  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, traps: g.traps.map(({ id, x, y, fl, kind }) => ({ id, x, y, fl, kind })) });
+  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, mode: g.mode, phase: g.phase, sculptTime: SCULPT_TIME, traps: g.traps.map(({ id, x, y, fl, kind }) => ({ id, x, y, fl, kind })) });
   broadcastLobby(r);
   const its = g.players.filter(p => p.role === 'it'), names = its.map(p => p.name).join(' and ');
-  for (const p of g.players) {
+  if (clayMode) note(r, 'Sculpt your clay! Then you will hide it, and hunt for someone else\'s.', '#ffe9a8', 5);
+  else for (const p of g.players) {
     if (p.role === 'it') tell(r, p, `You're IT${its.length > 1 ? ` (with ${its.filter(o => o !== p).map(o => o.name).join(', ')})` : ''}! Freeze every runner before time runs out.`, '#ff5252', 5);
     else tell(r, p, `${names} ${its.length > 1 ? 'are' : 'is'} IT! Run. Unfreeze frozen friends by standing next to them.`, '#69f0ae', 5);
   }
@@ -213,7 +223,7 @@ function onPos(r, c, m) {
     if (!p.frozen && now0 >= p.airUntil + JUMP_REST * 1000 - 100) p.airUntil = now0 + JUMP_T * 1000;
     p.jumps = m.j;
   }
-  if (p.frozen || (p.role === 'it' && g.time < HOLD)) { if (Math.hypot(m.x - p.x, m.y - p.y) > 2) teleport(r, p, p.x, p.y); return; }
+  if (p.frozen || (p.role === 'it' && g.time < HOLD) || g.phase === 'sculpt') { if (Math.hypot(m.x - p.x, m.y - p.y) > 2) teleport(r, p, p.x, p.y); return; }
   const x = Number(m.x), y = Number(m.y), now = Date.now();
   const dt = (now - p.lastPosT) / 1000;
   const speed = PLAYER_SPEED * (p.role === 'it' ? TAGGER_SPEED : 1);
@@ -240,7 +250,7 @@ function tick(r) {
   const dt = Math.min(0.1, (now - r.last) / 1000); r.last = now;
   const wasHold = g.time < HOLD;
   g.time += dt;
-  if (wasHold && g.time >= HOLD) note(r, 'The taggers are coming!', '#ff5252', 2.5);
+  if (wasHold && g.time >= HOLD && g.mode === 'tag') note(r, 'The taggers are coming!', '#ff5252', 2.5);
 
   for (const p of g.players) {
     p.immune = Math.max(0, p.immune - dt);
@@ -252,6 +262,7 @@ function tick(r) {
     }
   }
 
+  if (g.mode === 'clay') { clayTick(r, dt); if (r.state === 'play') sendSnapshots(r); return; }
   const runners = g.players.filter(p => p.role === 'run'), its = g.players.filter(p => p.role === 'it');
   stepOnTraps(r, runners, dt);
   // taggers freeze any free runner they touch
@@ -347,9 +358,10 @@ function sendSnapshots(r) {
     time: g.time, tc: g.traps.filter(t => t.cd > 0).map(t => t.id), // traps that just went off
     players: g.players.map(p => ({
       id: p.id, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.yaw * 100) / 100,
-      fz: p.frozen, imm: p.immune > 0, rp: Math.round(p.rescue * 100) / 100, tags: p.tags, f: p.fl, j: p.jumps,
+      fz: p.frozen, imm: p.immune > 0, rp: Math.round(p.rescue * 100) / 100, tags: p.tags, f: p.fl, j: p.jumps, sc: Math.floor(p.score),
     })),
   };
+  if (g.mode === 'clay') Object.assign(shared, { ph: g.phase, left: Math.max(0, Math.round((g.phaseEnd - g.time) * 10) / 10) });
   for (const p of g.players) {
     const c = r.clients.get(p.id);
     if (!c) continue;
@@ -360,6 +372,113 @@ function sendSnapshots(r) {
     }
     send(c.ws, { t: 's', ...shared, danger, chase: danger > 0.45 });
   }
+}
+
+// ---------------------------------------------------------------- hide clay
+// 1. sculpt: everyone sculpts a lump of clay (on their own device) and sends it in.
+// 2. hide: everyone walks the map, unseen by the others, and puts their sculpture down somewhere.
+// 3. hunt: everyone goes back to the start and is given someone else's sculpture to find. Find it to score (more the
+//    sooner); then you're given another. Your own sculpture scores for you every second it stays hidden.
+const clayOwner = (g, id) => g.players.find(p => p.id === id);
+function onSculpt(r, c, m) {
+  const g = r.game;
+  if (g.mode !== 'clay' || g.phase !== 'sculpt' || !g.players.some(p => p.id === c.id)) return;
+  const n = m.n, ok = Number.isInteger(n) && n > 0 && n <= 20000 && typeof m.pos === 'string' && typeof m.col === 'string'
+    && Math.abs(m.pos.length - Math.ceil(n * 6 / 3) * 4) <= 4 && Math.abs(m.col.length - Math.ceil(n / 3) * 4) <= 4;
+  if (!ok) return;
+  g.sculpts.set(c.id, { n, pos: m.pos, col: m.col });
+  broadcast(r, { t: 'cs', done: g.sculpts.size, total: g.players.length });
+}
+// where a sculpture goes down: just in front of you if that's open floor, otherwise at your feet. Never on the stairs.
+function dropSpot(g, p) {
+  const w = Sh.world(g, p.fl), fx = p.x + Math.cos(p.yaw) * TILE * 0.45, fy = p.y + Math.sin(p.yaw) * TILE * 0.45;
+  const free = (x, y) => !Sh.solid(w, Math.floor(x / TILE), Math.floor(y / TILE)) && !(g.upper && Sh.rampAt(g.ramps, x, y));
+  if (free(fx, fy)) return { x: Math.round(fx), y: Math.round(fy), fl: p.fl };
+  if (free(p.x, p.y)) return { x: Math.round(p.x), y: Math.round(p.y), fl: p.fl };
+  // on a staircase: the nearest bit of open floor on the floor you're on
+  let best = null;
+  for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) if (free(center(x), center(y))) {
+    const d = Math.hypot(center(x) - p.x, center(y) - p.y);
+    if (!best || d < best.d) best = { d, x: center(x), y: center(y) };
+  }
+  return { x: best.x, y: best.y, fl: p.fl };
+}
+function onPlace(r, c) {
+  const g = r.game, p = clayOwner(g, c.id);
+  if (g.mode !== 'clay' || g.phase !== 'hide' || !p) return;
+  const o = dropSpot(g, p);
+  g.objs.set(p.id, { ...o, found: false, by: null, hidden: 0 });
+  send(c.ws, { t: 'placed', ...o });
+}
+function beginHide(r) {
+  const g = r.game;
+  g.phase = 'hide'; g.phaseEnd = g.time + HIDE_TIME;
+  broadcast(r, { t: 'phase', phase: 'hide', left: HIDE_TIME, objs: g.players.map(p => ({ id: p.id, data: g.sculpts.get(p.id) || null })) });
+  note(r, 'Hide your sculpture! Walk somewhere sneaky and press F (or the button) to put it down. Nobody can see you.', '#ffe9a8', 6);
+}
+// a new sculpture for `p` to hunt: one that hasn't been found yet and isn't theirs
+function newTarget(r, p) {
+  const g = r.game, left = [...g.objs.entries()].filter(([id, o]) => id !== p.id && !o.found).map(([id]) => id);
+  p.target = left.length ? left[rand(left.length)] : null;
+  const c = r.clients.get(p.id);
+  if (c) send(c.ws, { t: 'target', id: p.target });
+}
+function beginHunt(r) {
+  const g = r.game;
+  for (const p of g.players) if (!g.objs.has(p.id)) g.objs.set(p.id, { ...dropSpot(g, p), found: false, by: null, hidden: 0 }); // not hidden in time: it stays where they are
+  g.phase = 'hunt'; g.phaseEnd = g.time + g.roundTime;
+  g.players.forEach((p, i) => { const s = g.spawns[i % g.spawns.length]; p.fl = 0; teleport(r, p, center(s[0]), center(s[1])); }); // everyone back to the start
+  broadcast(r, { t: 'phase', phase: 'hunt', left: g.roundTime, objs: [...g.objs.entries()].map(([id, o]) => ({ id, x: o.x, y: o.y, fl: o.fl })) });
+  // everyone hunts someone else's sculpture (shuffled so nobody gets their own)
+  const ids = g.players.map(p => p.id);
+  let order;
+  do order = shuffleArr(ids.slice()); while (ids.length > 1 && order.some((id, i) => id === ids[i]));
+  g.players.forEach((p, i) => { p.target = order[i] === p.id ? null : order[i]; const c = r.clients.get(p.id); if (c) send(c.ws, { t: 'target', id: p.target }); });
+  note(r, 'Hunt! Find the sculpture shown at the top of your screen.', '#69f0ae', 4);
+}
+function onFind(r, c) {
+  const g = r.game, p = clayOwner(g, c.id);
+  if (g.mode !== 'clay' || g.phase !== 'hunt' || !p || !p.target) return;
+  const o = g.objs.get(p.target), owner = clayOwner(g, p.target);
+  if (!o || o.found || !sameFloor(g, p, o) || dist(p, o) > FIND_DIST * TILE + 8) return;
+  const pts = FIND_POINTS + Math.round(FIND_BONUS * Math.max(0, g.phaseEnd - g.time) / g.roundTime);
+  o.found = true; o.by = p.id; p.score += pts; p.finds++;
+  broadcast(r, { t: 'found', by: p.id, owner: p.target, pts });
+  note(r, `${p.name} found ${owner ? owner.name + "'s" : 'a'} sculpture! +${pts}`, '#69f0ae', 3);
+  const foundId = p.target;
+  for (const q of g.players) if (q.target === foundId) newTarget(r, q); // (anyone else hunting it gets a new one too)
+}
+function clayTick(r, dt) {
+  const g = r.game;
+  if (g.phase === 'sculpt' && (g.time >= g.phaseEnd || g.players.every(p => g.sculpts.has(p.id)))) beginHide(r);
+  else if (g.phase === 'hide' && g.time >= g.phaseEnd) beginHunt(r);
+  else if (g.phase === 'hunt') {
+    for (const [id, o] of g.objs) if (!o.found) { o.hidden += dt; const p = clayOwner(g, id); if (p) p.score += HIDDEN_POINTS * dt; }
+    const unfound = [...g.objs.values()].filter(o => !o.found).length;
+    if (!unfound) endClay(r, 'Every sculpture was found!');
+    else if (g.time >= g.phaseEnd) endClay(r, `Time's up with ${unfound} sculpture${unfound > 1 ? 's' : ''} still hidden.`);
+    else if (g.players.every(p => !p.target)) endClay(r, 'Nobody has anything left to find.');
+  }
+}
+function clayLeft(r, id) {
+  const g = r.game;
+  g.sculpts.delete(id); g.objs.delete(id);
+  if (g.players.length < MIN_PLAYERS) return endClay(r, 'Not enough players left.');
+  if (g.phase === 'hunt') for (const q of g.players) if (q.target === id) newTarget(r, q);
+  broadcast(r, { t: 'gone', id }); // (their sculpture goes with them)
+}
+function endClay(r, reason) {
+  clearInterval(r.timer); r.timer = null;
+  const g = r.game;
+  r.state = 'ended';
+  sendSnapshots(r);
+  const best = Math.max(...g.players.map(p => p.score));
+  broadcast(r, {
+    t: 'end', mode: 'clay', winner: g.players.filter(p => p.score === best).map(p => p.id), reason, time: g.time,
+    stats: g.players.map(p => { const o = g.objs.get(p.id), by = o && o.by && clayOwner(g, o.by); return { id: p.id, name: p.name, slot: p.slot, score: Math.floor(p.score), finds: p.finds, hidden: Math.round(o ? o.hidden : 0), foundBy: by ? by.name : null }; }),
+    objs: [...g.objs.entries()].map(([id, o]) => ({ id, x: o.x, y: o.y, fl: o.fl })),
+  });
+  broadcastLobby(r);
 }
 
 server.listen(PORT, () => {

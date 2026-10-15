@@ -20,6 +20,13 @@
     // jumping (space): a little hop. While you're in the air you don't set off noise traps, so you can jump over them.
     JUMP_T: 0.55,        // seconds a jump lasts
     JUMP_REST: 0.2,      // seconds after landing before you can jump again
+    // hide clay: everyone sculpts a clay object, hides it, then hunts for someone else's
+    SCULPT_TIME: 120,    // seconds to sculpt
+    HIDE_TIME: 45,       // seconds to walk round and hide your sculpture
+    FIND_DIST: 1.4,      // tiles: how close you have to be to pick up the sculpture you're hunting
+    FIND_POINTS: 100,    // points for finding your target, plus up to FIND_BONUS more the sooner you find it
+    FIND_BONUS: 150,
+    HIDDEN_POINTS: 1,    // points a sculpture earns its maker for every second it stays hidden during the hunt
   };
   const { TILE, COLS, ROWS } = C;
   // how many taggers: 1 for up to 6 players, 2 for 7 to 12
@@ -34,6 +41,10 @@
     building: ['glass', 'cans', 'bubble'], apartment: ['glass', 'cans', 'toy'], forest: ['twigs', 'leaves'],
     office: ['bubble', 'mug'], mall: ['toy', 'glass', 'bubble', 'cans'], library: ['books', 'bubble', 'mug'],
   };
+  // game modes the host can pick
+  S.MODES = [['tag', 'Freeze tag'], ['clay', 'Hide clay']];
+  // the colors you can paint your clay sculpture
+  S.CLAY_COLORS = ['#e85d5d', '#f28a3b', '#f2c94c', '#7fc65a', '#3fa66b', '#4aa3df', '#3c5fc4', '#9b6ad6', '#f07cb0', '#f4efe2', '#8a5a3a', '#3d3d48'];
   S.COLORS = ['#4fc3f7', '#ffb74d', '#81c784', '#f06292', '#fff176', '#4db6ac', '#ce93d8', '#ff8a65', '#7986cb', '#aed581', '#bcaaa4', '#e0e0e0'];
   // each player's skin tone and hair color come from their slot, so the clay people all look a bit different
   const SKINS = ['#f2c9a8', '#d9a07a', '#b97f55', '#8c5a3c', '#e8b58f', '#6b4430', '#f6d6bf', '#c58c66'];
