@@ -6,8 +6,8 @@ const os = require('os');
 const { WebSocketServer } = require('ws');
 const Sh = require('./public/shared.js');
 
-const { TILE, COLS, ROWS, PLAYER_SPEED, PLAYER_R, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, TAG_DIST, RESCUE_DIST, RESCUE_TIME,
-  IMMUNE, HOLD, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT } = Sh.C;
+const { TILE, COLS, ROWS, PLAYER_SPEED, PLAYER_R, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, TAG_DIST, RESCUE_DIST,
+  IMMUNE, HOLD, ACT_COOLDOWN, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT } = Sh.C;
 const { I, center, tileOf, dist, rand, bfs } = Sh;
 const PORT = Number(process.env.PORT) || 3000;
 const TICK_MS = 50;
@@ -102,6 +102,9 @@ function handle(c, m) {
     case 'pos':
       if (r && r.state === 'play') onPos(r, c, m);
       break;
+    case 'act': // left click / Space / the on-screen button: tag a runner, or unfreeze a friend
+      if (r && r.state === 'play') onAct(r, c);
+      break;
     case 'map': // the host picks the map in the lobby
       if (r && r.host === c.id && r.state !== 'play' && Sh.MAPS.some(m2 => m2[0] === m.map)) { r.map = m.map; broadcastLobby(r); }
       break;
@@ -180,7 +183,7 @@ function startGame(r) {
       return {
         id: c.id, slot: c.slot, name: c.name, char: c.char, role: it ? 'it' : 'run',
         x: center(spot.x), y: center(spot.y), yaw: level.yaw ?? Sh.START_YAW,
-        frozen: false, immune: 0, rescue: 0, rescuer: null, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now,
+        frozen: false, immune: 0, nextAct: 0, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now,
       };
     }),
   };
@@ -194,8 +197,8 @@ function startGame(r) {
   const its = g.players.filter(p => p.role === 'it'), names = its.map(p => p.name).join(' and ');
   if (explore) tell(r, g.players[0], 'Exploring on your own: no taggers, no clock. Invite friends to play freeze tag.', '#69f0ae', 5);
   else for (const p of g.players) {
-    if (p.role === 'it') tell(r, p, `You're IT${its.length > 1 ? ` (with ${its.filter(o => o !== p).map(o => o.name).join(', ')})` : ''}! Freeze every runner before time runs out.`, '#ff5252', 5);
-    else tell(r, p, `${names} ${its.length > 1 ? 'are' : 'is'} IT! Run. Unfreeze frozen friends by standing next to them.`, '#69f0ae', 5);
+    if (p.role === 'it') tell(r, p, `You're IT${its.length > 1 ? ` (with ${its.filter(o => o !== p).map(o => o.name).join(', ')})` : ''}! Catch the runners and tag them.`, '#ff5252', 5);
+    else tell(r, p, `${names} ${its.length > 1 ? 'are' : 'is'} IT! Run, and unfreeze your friends.`, '#69f0ae', 5);
   }
   r.timer = setInterval(() => tick(r), TICK_MS);
 }
@@ -225,6 +228,31 @@ function teleport(r, p, x, y, a) { // `a`: face this way afterwards (used by sta
   if (c) send(c.ws, { t: 'tp', x, y, s: p.tpSeq, a });
 }
 
+// Tagging and unfreezing happen on a click (or Space, or the on-screen button), not just by bumping into
+// someone: a tagger freezes the nearest free runner within reach; a free runner unfreezes the nearest frozen one.
+function onAct(r, c) {
+  const g = r.game, p = g.players.find(p => p.id === c.id);
+  if (!p || p.frozen || g.time < p.nextAct) return;
+  p.nextAct = g.time + ACT_COOLDOWN; // no machine-gun clicking
+  const near = (want, reach) => g.players.filter(o => o !== p && want(o) && sameFloor(g, o, p) && dist(o, p) <= reach)
+    .sort((a, b) => dist(a, p) - dist(b, p))[0];
+  if (p.role === 'it') {
+    if (g.time < HOLD) return;
+    const v = near(o => o.role === 'run' && !o.frozen && o.immune <= 0, TAG_DIST);
+    if (!v) return;
+    v.frozen = true; v.timesFrozen++; p.tags++;
+    teleport(r, v, v.x, v.y); // pin them where they were tagged
+    note(r, `${p.name} froze ${v.name}!`, '#7fd4ff');
+  } else {
+    const v = near(o => o.role === 'run' && o.frozen, RESCUE_DIST);
+    if (!v) return;
+    v.frozen = false; v.immune = IMMUNE; p.saves++;
+    note(r, `${p.name} unfroze ${v.name}!`, '#69f0ae');
+  }
+  checkWin(r);
+  if (r.state === 'play') sendSnapshots(r);
+}
+
 // ---------------------------------------------------------------- simulation
 const sameFloor = (g, a, b) => Sh.floorOf(g.floors, a.x) === Sh.floorOf(g.floors, b.x);
 
@@ -245,25 +273,6 @@ function tick(r) {
     }
   }
 
-  const runners = g.players.filter(p => p.role === 'run'), its = g.players.filter(p => p.role === 'it');
-  // taggers freeze any free runner they touch
-  if (g.time >= HOLD) for (const T of its) for (const p of runners) {
-    if (p.frozen || p.immune > 0 || !sameFloor(g, T, p) || dist(T, p) > TAG_DIST) continue;
-    p.frozen = true; p.rescue = 0; p.timesFrozen++; T.tags++;
-    teleport(r, p, p.x, p.y); // pin them where they were tagged
-    note(r, `${T.name} froze ${p.name}!`, '#7fd4ff');
-  }
-  // a free runner standing next to a frozen one thaws them out, bit by bit
-  for (const p of runners) {
-    if (!p.frozen) continue;
-    const helper = runners.find(o => !o.frozen && sameFloor(g, o, p) && dist(o, p) <= RESCUE_DIST);
-    p.rescuer = helper ? helper.id : null;
-    p.rescue = helper ? p.rescue + dt / RESCUE_TIME : Math.max(0, p.rescue - dt / RESCUE_TIME);
-    if (p.rescue >= 1) {
-      p.frozen = false; p.rescue = 0; p.rescuer = null; p.immune = IMMUNE; helper.saves++;
-      note(r, `${helper.name} unfroze ${p.name}!`, '#69f0ae');
-    }
-  }
   checkWin(r);
   if (r.state === 'play') sendSnapshots(r);
 }
@@ -302,7 +311,7 @@ function sendSnapshots(r) {
     time: g.time,
     players: g.players.map(p => ({
       id: p.id, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.yaw * 100) / 100,
-      fz: p.frozen, imm: p.immune > 0, rp: Math.round(p.rescue * 100) / 100, tags: p.tags,
+      fz: p.frozen, imm: p.immune > 0, tags: p.tags,
     })),
   };
   for (const p of g.players) {

@@ -77,18 +77,16 @@ function makePerson(kind, color, slot) {
   return g;
 }
 
-// the freeze-tag bits around a person: a glowing red ring under a tagger, a block of ice around a frozen runner,
-// and a green ring that fills up while a friend unfreezes them. (These never fade with the person.)
+// the freeze-tag bits around a person: a glowing red ring under a tagger and a block of ice around a frozen
+// runner. (These never fade with the person.)
 function addTagBits(model, role) {
   const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.03, 8, 32), glow('#ff3b3b', { transparent: true }));
   ring.rotation.x = Math.PI / 2; ring.position.y = 0.03; ring.visible = role === 'it';
   const ice = new THREE.Mesh(rbox(0.62, 1.3, 0.62, 0.12, 0.01),
     new THREE.MeshPhysicalMaterial({ color: '#cdefff', transparent: true, opacity: 0.42, roughness: 0.08, clearcoat: 1, depthWrite: false }));
   ice.position.y = 0.62; ice.visible = false;
-  const rescue = new THREE.Mesh(new THREE.RingGeometry(0.4, 0.46, 40), glow('#69f0ae', { side: THREE.DoubleSide }));
-  rescue.rotation.x = -Math.PI / 2; rescue.position.y = 0.04; rescue.visible = false;
-  for (const o of [ring, ice, rescue]) { o.userData.noFade = true; model.add(o); }
-  return { ring, ice, rescue };
+  for (const o of [ring, ice]) { o.userData.noFade = true; model.add(o); }
+  return { ring, ice };
 }
 
 function nameSprite(text, color) {
@@ -210,7 +208,7 @@ export function createView3D(canvas) {
       const tag = nameSprite(p.role === 'it' ? `${p.name} · IT` : p.name, p.role === 'it' ? '#ff6b6b' : COLORS[p.slot]);
       const tagFz = nameSprite(`❄ ${p.name} · frozen`, '#9fe3ff');
       scene.add(model, tag, tagFz);
-      players.set(id, { model, tag, tagFz, ...bits, rp: 0 });
+      players.set(id, { model, tag, tagFz, ...bits });
     }
 
     S = { G, apt, forest, players, spot, near };
@@ -279,14 +277,9 @@ export function createView3D(canvas) {
       body.position.y = p.walk ? Math.abs(Math.cos(p.walk)) * 0.04 : 0;
       body.rotation.x = p.walk ? Math.sin(p.walk * 0.5) * 0.06 : 0;
       legs[0].rotation.z = Math.sin(p.walk) * 0.6; legs[1].rotation.z = -Math.sin(p.walk) * 0.6;
-      // tag bits: the tagger's ring pulses; ice while frozen, and the unfreeze ring fills up as a friend helps
+      // tag bits: the tagger's ring pulses; ice while frozen
       o.ring.material.opacity = 0.55 + 0.45 * Math.sin(t * 6);
       o.ice.visible = p.fz;
-      if (p.fz && p.rp > 0) {
-        const q = Math.round(p.rp * 20) / 20;
-        if (q !== o.rp) { o.rp = q; o.rescue.geometry.dispose(); o.rescue.geometry = new THREE.RingGeometry(0.4, 0.46, 40, 1, 0, Math.PI * 2 * Math.max(0.02, q)); }
-        o.rescue.visible = true;
-      } else o.rescue.visible = false;
     }
 
     if (S.apt) updateApartment(S.apt, f, t);

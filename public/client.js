@@ -108,7 +108,7 @@ function onMsg(m) {
       room.host = m.host; room.players = m.players; room.state = m.state; room.map = m.map || 'building'; room.roundTime = m.roundTime || room.roundTime;
       if (m.state === 'lobby') {
         if (document.pointerLockElement) document.exitPointerLock();
-        ui = 'lobby'; G = null; exploreExit.hidden = true; renderLobby();
+        ui = 'lobby'; G = null; exploreExit.hidden = true; actBtn.hidden = true; renderLobby();
       }
       else if (ui === 'ended') renderEnd();
       break;
@@ -124,6 +124,7 @@ function onMsg(m) {
     case 'end':
       if (document.pointerLockElement) document.exitPointerLock();
       chase.pause(); chase.currentTime = 0;
+      actBtn.hidden = true;
       if (G) { G.result = m; ui = 'ended'; renderEnd(); }
       break;
   }
@@ -149,8 +150,8 @@ function renderHome() {
     ${musicButton()}
     <details ${code ? '' : 'open'}><summary>How to play</summary><ul class="rules">
       <li>At the start of each round some players are picked at random to be <b style="color:#ff5252">IT</b> (1 tagger for up to 6 players, 2 for 7–12). Everyone else is a <b style="color:#69f0ae">runner</b>.</li>
-      <li>Runners get a ${Sh.C.HOLD}-second head start. Then the taggers hunt them. A tagger <b>freezes</b> any runner they touch, and frozen runners can't move.</li>
-      <li>Stand next to a frozen runner for ${Sh.C.RESCUE_TIME} seconds to <b>unfreeze</b> them. They're safe from tags for a moment afterwards.</li>
+      <li>Runners get a ${Sh.C.HOLD}-second head start. Then the taggers hunt them. A tagger <b>freezes</b> a runner by catching up to them and <b>left-clicking</b> (or pressing Space), and frozen runners can't move.</li>
+      <li>Get next to a frozen runner and <b>left-click</b> (or press Space) to <b>unfreeze</b> them. They're safe from tags for a moment afterwards. On a phone, use the button in the corner.</li>
       <li><b>Taggers win</b> if every runner is frozen before time runs out. <b>Runners win</b> if at least one of them is still free when the timer ends.</li>
       <li>It's dark: you only see what your headlight shows, and walls block it. Runners always know where their teammates are; taggers only show up when you can see them. Listen for the heartbeat: a tagger is close.</li>
       <li><b>Top-down, PC:</b> move with WASD or the arrow keys; your headlight points the way you walk. <b>Phone:</b> drag anywhere to move.</li>
@@ -247,7 +248,7 @@ function initGame(m) {
     msgs: [], lastSent: 0, sentX: null, sentY: null, sentA: null, result: null, walk: 0, moving: false, flicker: 1, flip: 1,
   };
   for (const p of m.players)
-    G.players.set(p.id, { ...p, rx: p.x, ry: p.y, tx: p.x, ty: p.y, ta: m.yaw ?? Sh.START_YAW, ra: m.yaw ?? Sh.START_YAW, fz: false, imm: false, rp: 0, tags: 0, walk: 0, flip: 1 });
+    G.players.set(p.id, { ...p, rx: p.x, ry: p.y, tx: p.x, ty: p.y, ta: m.yaw ?? Sh.START_YAW, ra: m.yaw ?? Sh.START_YAW, fz: false, imm: false, tags: 0, walk: 0, flip: 1 });
   aim = m.yaw ?? Sh.START_YAW; pitch = 0;
   for (const d of G.doors) d.swing = doorSwing(G, d);
   G.doorOpen = new Float32Array(G.doors.length);
@@ -263,7 +264,7 @@ function applySnapshot(s) {
     const p = G.players.get(sp.id);
     if (!p) continue;
     seen.add(sp.id);
-    Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, rp: sp.rp, tags: sp.tags });
+    Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, tags: sp.tags });
   }
   for (const id of [...G.players.keys()]) if (!seen.has(id)) G.players.delete(id); // someone left
   G.n = G.players.size;
@@ -279,6 +280,7 @@ addEventListener('keydown', e => {
   keys.add(e.code);
   if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
   if (e.code === 'KeyM' && !e.repeat) setMusic(!musicOn);
+  if (e.code === 'Space' && !e.repeat) act();
   if (e.code === 'KeyL' && !e.repeat && G && G.explore && ui === 'play') leaveExplore();
   if (e.code === 'KeyV' && !e.repeat && G && ui === 'play') {
     const i = VIEWS.findIndex(v => v[0] === viewMode);
@@ -294,8 +296,9 @@ exploreExit.onclick = leaveExplore;
 addEventListener('pointerdown', () => { if (musicOn && music.paused) music.play().catch(() => {}); });
 addEventListener('blur', () => keys.clear());
 
-cvs.addEventListener('mousedown', () => {
+cvs.addEventListener('mousedown', e => {
   ensureAudio();
+  if (e.button === 0) act(); // left click: tag, or unfreeze
   // 3D views: click to capture the mouse for looking around
   if (viewMode !== 'top' && ui === 'play' && !document.pointerLockElement && cvs.requestPointerLock) {
     try { const r = cvs.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch {}
@@ -306,6 +309,33 @@ addEventListener('mousemove', e => {
   aim += e.movementX * 0.0025;
   pitch = Math.max(-0.7, Math.min(0.7, pitch - e.movementY * 0.0025));
 });
+
+// tag a runner (if you're IT) or unfreeze a friend (if you're a runner); the server checks who's in reach
+function act() {
+  if (!G || ui !== 'play' || G.explore) return;
+  const meP = G.players.get(myId);
+  if (!meP || meP.fz || (G.role === 'it' && G.time < G.hold)) return; // frozen, or still waiting out the head start
+  send({ t: 'act' });
+  G.actAt = performance.now();
+}
+// who a click would reach right now, for the hint and the on-screen button
+function actTarget() {
+  const meP = G && G.players.get(myId);
+  if (!meP || G.explore || meP.fz || (G.role === 'it' && G.time < G.hold)) return null;
+  const me = G.me, floor = Sh.floorOf(G.floors, me.x);
+  let best = null, bd = Infinity;
+  for (const [id, p] of G.players) {
+    if (id === myId || p.role !== 'run') continue;
+    if (G.role === 'it' ? (p.fz || p.imm) : !p.fz) continue;
+    const pos = posOf(id, p), d = dist(me, pos);
+    if (Sh.floorOf(G.floors, pos.x) !== floor || d > (G.role === 'it' ? Sh.C.TAG_DIST : Sh.C.RESCUE_DIST) || d >= bd) continue;
+    best = p; bd = d;
+  }
+  return best;
+}
+const actBtn = document.getElementById('actBtn');
+actBtn.addEventListener('touchstart', e => { e.preventDefault(); e.stopPropagation(); ensureAudio(); act(); }, { passive: false });
+actBtn.onclick = act;
 
 // touch: drag anywhere to move
 let joy = null;
@@ -681,7 +711,7 @@ function drawPerson(c, kind, x, y, color, flip, walk, alpha = 1, slot = 0) {
 const CHARS = [['man', 'Man'], ['woman', 'Woman']];
 
 // what goes around a character on top of the body: the tagger's red glow and IT badge, ice around a frozen
-// runner (with the unfreeze progress ring), and the brief shimmer of a runner who was just unfrozen
+// runner, and the brief shimmer of a runner who was just unfrozen
 function drawTagMarks(p, x, y, t) {
   if (p.role === 'it') {
     ctx.save();
@@ -697,10 +727,6 @@ function drawTagMarks(p, x, y, t) {
     ctx.fillStyle = g; roundRect(ctx, x - 16, y - 42, 32, 60, 8); ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.fillRect(x - 11, y - 37, 4, 22); ctx.fillRect(x - 5, y - 37, 2, 10); // glints
-    if (p.rp > 0) { // a friend is thawing them out
-      ctx.strokeStyle = '#69f0ae'; ctx.lineWidth = 3.5; ctx.shadowColor = '#69f0ae'; ctx.shadowBlur = 8;
-      ctx.beginPath(); ctx.arc(x, y - 12, 25, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, p.rp)); ctx.stroke();
-    }
     ctx.restore();
   }
 }
@@ -726,7 +752,7 @@ function draw3D(t) {
   for (const [id, p] of G.players) {
     const pos = posOf(id, p), self = id === myId;
     players.set(id, {
-      ...pos, a: self ? aim : p.ra, walk: self ? G.walk : p.walk, role: p.role, fz: p.fz, imm: p.imm, rp: p.rp,
+      ...pos, a: self ? aim : p.ra, walk: self ? G.walk : p.walk, role: p.role, fz: p.fz, imm: p.imm,
       show: canSee(view, id, p, pos), mark: !self && isTeammate(p), h: Sh.stairHeight(G.flights, pos.x, pos.y),
     });
   }
@@ -760,6 +786,12 @@ function drawWorld(t) {
     } });
   }
   actors.sort((a, b) => a.y - b.y).forEach(a => a.draw());
+  const sinceAct = (performance.now() - (G.actAt || -1e9)) / 250;
+  if (sinceAct < 1) { // a quick ring around you when you click: your reach
+    const reach = G.role === 'it' ? Sh.C.TAG_DIST : Sh.C.RESCUE_DIST;
+    ctx.strokeStyle = G.role === 'it' ? `rgba(255,90,90,${1 - sinceAct})` : `rgba(105,240,174,${1 - sinceAct})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(G.me.x, G.me.y, reach * (0.6 + 0.4 * sinceAct), 0, Math.PI * 2); ctx.stroke();
+  }
 
   // darkness: everything outside your light. Walls block the light.
   mctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -862,6 +894,7 @@ function drawStatus(meP) {
   ctx.font = 'bold 14px system-ui'; ctx.fillStyle = COLORS[meP.slot];
   ctx.fillText(meP.name, x + 14, y + 20);
   let status, col;
+  const target = actTarget(), clickWord = isTouch ? 'Tap the button' : 'Click';
   if (G.explore) { status = 'EXPLORING'; col = '#69f0ae'; }
   else if (it) { status = G.time < G.hold ? 'IT · WAIT' : 'IT'; col = '#ff5252'; }
   else if (meP.fz) { status = 'FROZEN'; col = '#7fd4ff'; }
@@ -871,9 +904,10 @@ function drawStatus(meP) {
   ctx.font = '13px system-ui'; ctx.fillStyle = '#e8e6f0';
   let hint;
   if (G.explore) hint = isTouch ? 'Walk around and look at the map' : 'Walk around and look at the map · L to leave';
-  else if (it) hint = G.time < G.hold ? `Get ready… you can move in ${Math.ceil(G.hold - G.time)}s` : `Touch runners to freeze them · frozen so far: ${meP.tags}`;
-  else if (meP.fz) hint = meP.rp > 0 ? `A friend is unfreezing you… ${Math.round(meP.rp * 100)}%` : 'Wait for a friend to stand next to you';
-  else hint = 'Stand next to frozen friends to unfreeze them';
+  else if (it) hint = G.time < G.hold ? `Get ready… you can move in ${Math.ceil(G.hold - G.time)}s` : target ? `${clickWord} to freeze ${target.name}!` : `Catch a runner and ${clickWord.toLowerCase()} · frozen so far: ${meP.tags}`;
+  else if (meP.fz) hint = 'Wait for a friend to come and unfreeze you';
+  else hint = target ? `${clickWord} to unfreeze ${target.name}!` : `Get next to frozen friends and ${clickWord.toLowerCase()} to unfreeze them`;
+  if (target) { ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#ffe680'; } // someone's in reach: say so
   ctx.fillText(hint, x + 14, y + 44);
 }
 
@@ -895,6 +929,14 @@ function drawHud(t) {
   }
   drawMinimap(W - COLS * MINI - 10, 50);
   drawStatus(meP);
+  // phones: the tag / unfreeze button, lit up when someone's in reach
+  const showBtn = isTouch && !G.explore && !(meP.fz && G.role !== 'it');
+  actBtn.hidden = !showBtn;
+  if (showBtn) {
+    actBtn.textContent = G.role === 'it' ? 'TAG' : 'UNFREEZE';
+    actBtn.classList.toggle('ready', !!actTarget());
+    actBtn.classList.toggle('it', G.role === 'it');
+  }
 
   // top bar: your role, how many runners are still free, and the time left
   const bw = Math.min(560, W - 20), bx = (W - bw) / 2;

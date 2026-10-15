@@ -6,14 +6,14 @@ Everyone has a headlight, and walls block it, so you only see what's in your lin
 ## How to play
 
 - At the start of each round, players are picked at random to be **IT** (taggers): 1 for 2–6 players, 2 for 7–12. Everyone else is a **runner**. Everyone plays as a clay man or woman (pick one in the lobby).
-- Runners get a 5-second head start. Then a tagger who touches a runner **freezes** them, and frozen runners can't move.
-- A free runner who stands next to a frozen one for 0.75 seconds **unfreezes** them. They can't be tagged for 2 seconds afterwards.
+- Runners get a 5-second head start. Then a tagger who catches up to a runner and **left-clicks** (or presses Space) **freezes** them, and frozen runners can't move.
+- A free runner who gets next to a frozen one and **left-clicks** (or presses Space) **unfreezes** them. They can't be tagged for 2 seconds afterwards.
 - **Taggers win** if every runner is frozen before time runs out. **Runners win** if at least one is still free when the timer ends.
 - **On your own?** If you're the only one in the room, the button says **Explore the map**: you walk around the chosen map with no tagger and no clock. Press **L** or the **← Lobby** button to go back.
 - The host picks the map and the round length (1, 2, 3, 5 or 8 minutes) in the lobby. "Play again" picks new taggers.
 - Runners always see where the other runners are (frozen ones are marked with ❄), so they can go and rescue them. Taggers only show up when you can actually see them. When a tagger gets close you hear a heartbeat and the chase music.
 
-The rules' numbers (tagger speed, unfreeze time, head start, round lengths...) are at the top of `public/shared.js`.
+The rules' numbers (tagger speed, tag and unfreeze reach, head start, round lengths...) are at the top of `public/shared.js`.
 
 ## Maps
 
@@ -31,12 +31,12 @@ Each player picks their own view in the lobby: **Top-down**, **Third person** or
 ## Controls
 
 **Top-down**
-- **PC:** WASD or the arrow keys move you. Your headlight points the way you're walking.
-- **Phone/tablet:** drag anywhere to move.
+- **PC:** WASD or the arrow keys move you. Your headlight points the way you're walking. Left-click (or Space) to tag or unfreeze.
+- **Phone/tablet:** drag anywhere to move. Tap the round **TAG** / **UNFREEZE** button to tag or unfreeze; it lights up when someone's in reach.
 
 **First / third person**
-- **PC:** click the game to look around with the mouse (Esc frees the mouse). W/S walk, A/D step sideways, ←/→ or Q/E turn.
-- **Phone/tablet:** drag up/down to walk, left/right to turn.
+- **PC:** click the game to look around with the mouse (Esc frees the mouse). W/S walk, A/D step sideways, ←/→ or Q/E turn. Left-click (or Space) to tag or unfreeze.
+- **Phone/tablet:** drag up/down to walk, left/right to turn. Tap the round button to tag or unfreeze.
 
 ## Run the server
 
