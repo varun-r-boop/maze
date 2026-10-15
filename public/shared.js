@@ -27,6 +27,14 @@
     FIND_POINTS: 100,    // points for finding your target, plus up to FIND_BONUS more the sooner you find it
     FIND_BONUS: 150,
     HIDDEN_POINTS: 1,    // points a sculpture earns its maker for every second it stays hidden during the hunt
+    // key escape: find your own key, get to the gate, don't let the bot catch you
+    KEY_DIST: 26,        // px: how close you have to walk to your key to pick it up
+    GATE_DIST: 34,       // px: how close to the gate you have to be (with your key) to get out
+    CATCH_DIST: 24,      // px: how close the bot has to get to catch you
+    BOT_SPEED: 0.92,     // the bot's speed (times a player's) at the start; it speeds up to BOT_SPEED_END by the end
+    BOT_SPEED_END: 1.05,
+    ZONE_R: 2.5,         // tiles: the safe zone's radius. The bot can't go in, and can't catch you while you're in it.
+    ZONE_TIME: 10,       // seconds before the safe zone moves somewhere else
   };
   const { TILE, COLS, ROWS } = C;
   // how many taggers: 1 for up to 6 players, 2 for 7 to 12
@@ -42,7 +50,9 @@
     office: ['bubble', 'mug'], mall: ['toy', 'glass', 'bubble', 'cans'], library: ['books', 'bubble', 'mug'],
   };
   // game modes the host can pick
-  S.MODES = [['tag', 'Freeze tag'], ['clay', 'Hide clay']];
+  S.MODES = [['tag', 'Freeze tag'], ['clay', 'Hide clay'], ['escape', 'Key escape']];
+  // key escape: how many bots chase you: 1 for up to 4 players, 2 for up to 8, 3 for more
+  S.botCount = n => n <= 4 ? 1 : n <= 8 ? 2 : 3;
   // the colors you can paint your clay sculpture
   S.CLAY_COLORS = ['#e85d5d', '#f28a3b', '#f2c94c', '#7fc65a', '#3fa66b', '#4aa3df', '#3c5fc4', '#9b6ad6', '#f07cb0', '#f4efe2', '#8a5a3a', '#3d3d48'];
   S.COLORS = ['#4fc3f7', '#ffb74d', '#81c784', '#f06292', '#fff176', '#4db6ac', '#ce93d8', '#ff8a65', '#7986cb', '#aed581', '#bcaaa4', '#e0e0e0'];
@@ -476,12 +486,12 @@
   };
   // distances (in steps) from a tile to every tile on every floor: index fl * COLS * ROWS + tile.
   // Uses the staircases (and the apartment's stairs).
-  S.reach = function (L, sx, sy) {
+  S.reach = function (L, sx, sy, sf = 0) { // (sf: the floor to start on)
     const N = COLS * ROWS, grids = L.upper ? [L.grid, L.upper] : [L.grid], ramp = new Uint8Array(N);
     for (const r of L.ramps || []) for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) ramp[I(x, y)] = 1;
     const links = S.stairLinks(L.stairs || []);
     const d = new Int16Array(N * grids.length).fill(-1), q = new Int32Array(N * grids.length); let h = 0, t = 0;
-    d[I(sx, sy)] = 0; q[t++] = I(sx, sy);
+    d[sf * N + I(sx, sy)] = 0; q[t++] = sf * N + I(sx, sy);
     const visit = (ni, c) => { if (d[ni] === -1) { d[ni] = d[c] + 1; q[t++] = ni; } };
     while (h < t) {
       const c = q[h++], f = c >= N ? 1 : 0, i = c - f * N, x = i % COLS, y = (i / COLS) | 0;

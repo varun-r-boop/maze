@@ -27,6 +27,18 @@ The host can switch the lobby's **Game mode** from Freeze tag to **Hide clay**:
 
 The round ends when time runs out or every sculpture has been found; the highest score wins. The timings and points are at the top of `public/shared.js`.
 
+## Key escape (the third game mode)
+
+Everyone is on the same side, and you can play it on your own too:
+
+- **Find your key.** Everyone has their own gold key hidden somewhere on the map. It only shows up in your light, and only you can see yours. Walk over it to pick it up.
+- **Unlock your lock.** Take it to the **EXIT gate** (the square on your minimap). The gate has a lock for every player: walk up to it with your key and your lock opens (the padlock turns yellow; under the gate it says how many are open).
+- **Get out together.** The gate only opens once **everyone** has unlocked theirs (it turns green and the bars disappear). Then walk through it to escape. So help your friends: unfreeze anyone the bot caught before they've unlocked their lock.
+- **Don't get caught.** A bot wakes up after a 5-second head start and hunts down whoever is closest (2 bots for 5–8 players, 3 for more). It gets a little faster as the round goes on. If it catches you, you're frozen until a friend unfreezes you, like in freeze tag. Listen for the heartbeat.
+- **The safe zone.** The bot can't go into the glowing green square box, and can't catch you while you're in it. It moves somewhere else every 10 seconds (it flashes just before), so you can't hide there forever.
+
+The round ends when everyone has escaped or been caught, or time runs out. If anyone got out, the players win; otherwise the bot does. The numbers (bot speed, catch distance, safe zone size and timing) are at the top of `public/shared.js`.
+
 ## Maps
 
 The host picks the map in the lobby:

@@ -387,11 +387,74 @@ export function createView3D(canvas) {
       s.ring.visible = o.found; if (o.found) s.ring.scale.setScalar(1 + 0.08 * Math.sin(t * 5));
     }
 
+    if (f.escape) updateEscape(f.escape, f, t);
     if (S.apt) updateApartment(S.apt, f, t);
     if (S.forest) updateForest(S.forest, f, t, camera);
     if (S.mall) updateMall(S.mall, t);
     if (S.library) updateLibrary(S.library, t);
     if (fx) fx.render(); else renderer.render(scene, camera);
+  }
+
+  // key escape: the bots (grey clay people with a red visor and a tagger's ring), your key, the exit gate and the
+  // safe zone. Built the first time they're needed.
+  function updateEscape(e, f, t) {
+    const view = f.view, viewFloor = Sh.floorOf(f.G.floors, view.x), onFloor = o => Sh.floorOf(f.G.floors, o.x) === viewFloor;
+    if (!S.esc) {
+      const key = new THREE.Group(), gold = glow('#ffc93c');
+      key.add(new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.022, 8, 20), gold).translateX(-0.1));
+      key.add(new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.035, 0.035), gold).translateX(0.06));
+      for (const x of [0.1, 0.15]) key.add(new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.06, 0.03), gold).translateX(x).translateY(-0.04));
+      const keyLight = new THREE.PointLight('#ffd54f', 0.8, 1.6, 1); key.add(keyLight);
+      const gate = new THREE.Group(), frame = std('#4a4458'), lock = glow('#ff5252');
+      for (const z of [-0.45, 0.45]) gate.add(new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.3, 0.12), frame).translateZ(z).translateY(0.65));
+      gate.add(new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 1.1), frame).translateY(1.33));
+      const bars = new THREE.Group(); gate.add(bars); // (gone once the gate is open)
+      for (let z = -0.3; z <= 0.31; z += 0.15) bars.add(new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 1.25, 6), std('#8d88a0', { metalness: 0.6 })).translateZ(z).translateY(0.63));
+      const padlock = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.14), lock); padlock.position.y = 0.7; gate.add(padlock);
+      const sign = nameSprite('EXIT', '#ffffff'); sign.position.y = 1.62; gate.add(sign);
+      const gateLight = new THREE.PointLight('#ff5252', 1.2, 2.5, 1); gateLight.position.y = 1; gate.add(gateLight);
+      const zoneMat = glow('#69f0ae', { transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
+      const zoneFill = glow('#69f0ae', { transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false });
+      const zone = new THREE.Group();
+      // a square box on the floor (2 x 2, scaled to the zone's size): a faint fill, and a glowing edge with posts at the corners
+      zone.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2), zoneFill));
+      for (const [x, z, w, d] of [[0, -1, 2, 0.03], [0, 1, 2, 0.03], [-1, 0, 0.03, 2], [1, 0, 0.03, 2]]) zone.add(new THREE.Mesh(new THREE.PlaneGeometry(w, d).rotateX(-Math.PI / 2), zoneMat).translateX(x).translateZ(z).translateY(0.002));
+      for (const x of [-1, 1]) for (const z of [-1, 1]) zone.add(new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.25, 0.04), zoneMat).translateX(x).translateZ(z).translateY(0.12));
+      zone.position.y = 0.015;
+      scene.add(key, gate, zone);
+      S.esc = { bots: [], key, gate, bars, padlock, lock, gateLight, zone, zoneMat, zoneFill };
+    }
+    const E = S.esc;
+    while (E.bots.length < e.bots.length) {
+      const model = makePerson('man', '#4a5060', 5), bits = addTagBits(model, 'it'), tag = nameSprite('BOT', '#ff6b6b');
+      const visor = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.24), glow('#ff3b3b')); visor.position.set(0.15, 0.95, 0); visor.userData.noFade = true;
+      model.userData.body.add(visor);
+      scene.add(model, tag); E.bots.push({ model, tag, ...bits });
+    }
+    E.bots.forEach((o, i) => {
+      const b = e.bots[i];
+      o.model.visible = o.tag.visible = !!b && b.show && onFloor(b);
+      if (!b) return;
+      const px = b.x / TILE, py = (b.h || 0) * S.SH, pz = b.y / TILE;
+      o.model.position.set(px, py, pz); o.model.rotation.y = -b.a; o.tag.position.set(px, py + 1.32, pz);
+      const { body, legs, arms } = o.model.userData;
+      arms[0].rotation.z = -Math.sin(b.walk) * 0.5; arms[1].rotation.z = Math.sin(b.walk) * 0.5;
+      legs[0].rotation.z = Math.sin(b.walk) * 0.6; legs[1].rotation.z = -Math.sin(b.walk) * 0.6;
+      body.position.y = b.walk ? Math.abs(Math.cos(b.walk)) * 0.04 : 0;
+      o.ring.material.opacity = 0.55 + 0.45 * Math.sin(t * 6);
+    });
+    E.key.visible = !!(e.key && e.key.show && onFloor(e.key));
+    if (e.key) { E.key.position.set(e.key.x / TILE, (e.key.fl || 0) * S.SH + 0.45 + Math.sin(t * 3) * 0.06, e.key.y / TILE); E.key.rotation.y = t * 2; }
+    E.gate.visible = onFloor(e.gate);
+    E.gate.position.set(e.gate.x / TILE, (e.gate.fl || 0) * S.SH, e.gate.y / TILE);
+    const gc = e.gateState === 'open' ? '#69f0ae' : e.gateState === 'locked' ? '#ff5252' : '#ffd54f'; E.lock.color.set(gc); E.gateLight.color.set(gc);
+    E.bars.visible = E.padlock.visible = e.gateState !== 'open';
+    E.zone.visible = !!e.zone && onFloor(e.zone);
+    if (e.zone) {
+      E.zone.position.set(e.zone.x / TILE, (e.zone.fl || 0) * S.SH + 0.015, e.zone.y / TILE); E.zone.scale.set(e.zone.r / TILE, 1, e.zone.r / TILE);
+      const blink = e.zl < 3 && Math.floor(t * 6) % 2;
+      E.zoneMat.opacity = blink ? 0.25 : 0.85; E.zoneFill.opacity = blink ? 0.04 : 0.12;
+    }
   }
 
   return { build, render, resize, get ready() { return !!S; } };
