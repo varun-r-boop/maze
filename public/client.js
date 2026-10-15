@@ -1,8 +1,10 @@
 import { drawApartmentMap, drawDoors2D, doorSwing } from './apartment2d.js';
 import { drawForestMap, drawForestGlow } from './forest2d.js';
 import { drawOfficeMap, drawOfficeLamps } from './office2d.js';
+import { drawMallMap, drawMallGlow } from './mall2d.js';
+import { drawLibraryMap, drawLibraryGlow } from './library2d.js';
 const Sh = window.Shared;
-const { TILE, COLS, ROWS, PLAYER_R, PLAYER_SPEED, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, ROUND_TIMES } = Sh.C;
+const { TILE, COLS, ROWS, PLAYER_R, PLAYER_SPEED, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, ROUND_TIMES, JUMP_T, JUMP_REST } = Sh.C;
 const { center, dist } = Sh;
 const COLORS = Sh.COLORS;
 const MINI = 3;
@@ -11,6 +13,9 @@ const R_NEAR = TILE * 2.2, R_FAR = TILE * 7.5, CONE = 0.5; // CONE = half-angle 
 // on maps with the lights on (the office) you see in every direction, as far as R_BRIGHT, wherever nothing blocks the view
 const R_BRIGHT = TILE * 9;
 const isTouch = matchMedia('(pointer: coarse)').matches;
+// a jump: how high you go (0..1) this far into it; drawn this many pixels up in top-down, and this high (in tiles) in 3D
+const jumpK = t => t >= 0 ? Math.sin(Math.PI * Math.min(1, t / JUMP_T)) : 0;
+const JUMP_PX = 18, JUMP_3D = 0.42;
 
 // ---------------------------------------------------------------- canvases
 const cvs = document.getElementById('c'), ctx = cvs.getContext('2d');
@@ -114,9 +119,11 @@ function onMsg(m) {
     case 's': if (G) applySnapshot(m); break;
     case 'tp': if (G) {
       G.me.x = m.x; G.me.y = m.y; G.tpSeq = m.s;
+      if (typeof m.f === 'number') G.fl = m.f;
       if (typeof m.a === 'number') { aim = m.a; pitch = 0; G.fade = 1; } // took the stairs: fade, and face out of the stairwell
     } break;
     case 'msg': if (G) addMsg(m.text, m.color, m.dur); break;
+    case 'noise': if (G) onNoise(m); break;
     case 'end':
       if (document.pointerLockElement) document.exitPointerLock();
       chase.pause(); chase.currentTime = 0;
@@ -151,6 +158,7 @@ function renderHome() {
       <li>It's dark: you only see what your headlight shows, and walls block it. Runners always know where their teammates are; taggers only show up when you can see them. Listen for the heartbeat: a tagger is close.</li>
       <li><b>Top-down, PC:</b> move with WASD or the arrow keys; your headlight points the way you walk. <b>Phone:</b> drag anywhere to move.</li>
       <li><b>First / third person, PC:</b> click the game to look around with the mouse (Esc frees it). W/S walk, A/D step sideways, ←/→ or Q/E turn. <b>Phone:</b> drag up/down to walk, left/right to turn.</li>
+      <li>Press <b>Space</b> to jump (or double-tap on a phone). Jump over a noise trap and it stays quiet.</li>
       <li>Press <b>V</b> during a game to switch views, and <b>M</b> to turn the music on or off.</li>
     </ul></details>`;
   bindViewPicker(); bindMusicButton(); bindCharPicker();
@@ -236,13 +244,15 @@ function initGame(m) {
   G = {
     grid: m.grid, n: m.players.length, roundTime: m.roundTime, hold: m.hold,
     floors: m.floors || [{ x0: 0, x1: COLS - 1 }], stairs: m.stairs || [], floor: -1,
-    map: m.map || 'building', flights: m.flights || [], rooms: m.rooms || [], furniture: m.furniture || [], doors: m.doors || [], forest: m.forest || null, office: m.office || null, bright: !!m.office, fade: 0,
+    upper: m.upper || null, ramps: m.ramps || [], library: m.library || null, fl: meInfo.fl || 0, jumpT: -1, rest: 0, jc: 0, sentJ: 0,
+    map: m.map || 'building', flights: m.flights || [], rooms: m.rooms || [], furniture: m.furniture || [], doors: m.doors || [], forest: m.forest || null, office: m.office || null, mall: m.mall || null, bright: !!m.bright, fade: 0,
     players: new Map(), me: { x: meInfo.x, y: meInfo.y }, slot: meInfo.slot, role: meInfo.role, tpSeq: 0,
     time: 0, danger: 0,
     msgs: [], lastSent: 0, sentX: null, sentY: null, sentA: null, result: null, walk: 0, moving: false, flicker: 1, flip: 1,
   };
+  G.traps = (m.traps || []).map(t => ({ ...t, hot: false })); G.noises = [];
   for (const p of m.players)
-    G.players.set(p.id, { ...p, rx: p.x, ry: p.y, tx: p.x, ty: p.y, ta: m.yaw ?? Sh.START_YAW, ra: m.yaw ?? Sh.START_YAW, fz: false, imm: false, rp: 0, tags: 0, walk: 0, flip: 1 });
+    G.players.set(p.id, { ...p, fl: p.fl || 0, rx: p.x, ry: p.y, tx: p.x, ty: p.y, ta: m.yaw ?? Sh.START_YAW, ra: m.yaw ?? Sh.START_YAW, fz: false, imm: false, rp: 0, tags: 0, walk: 0, flip: 1, jc: 0, jumpT: -1 });
   aim = m.yaw ?? Sh.START_YAW; pitch = 0;
   for (const d of G.doors) d.swing = doorSwing(G, d);
   G.doorOpen = new Float32Array(G.doors.length);
@@ -252,18 +262,31 @@ function initGame(m) {
 
 function applySnapshot(s) {
   G.chase = !!s.chase;
+  const hot = new Set(s.tc || []); // traps that just went off
+  for (const t of G.traps) t.hot = hot.has(t.id);
   G.time = s.time; G.danger = s.danger;
   const seen = new Set();
   for (const sp of s.players) {
     const p = G.players.get(sp.id);
     if (!p) continue;
     seen.add(sp.id);
-    Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, rp: sp.rp, tags: sp.tags });
+    Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, rp: sp.rp, tags: sp.tags, fl: sp.f || 0 });
+    if (sp.j > p.jc) { p.jc = sp.j; if (sp.id !== myId) p.jumpT = 0; } // they jumped
   }
   for (const id of [...G.players.keys()]) if (!seen.has(id)) G.players.delete(id); // someone left
   G.n = G.players.size;
 }
 const isTeammate = p => p.role === G.role;
+
+// a noise trap went off near you (or under you): show where, and play its sound (quieter the further away)
+function onNoise(m) {
+  const k = Sh.TRAPS[m.kind];
+  G.noises.push({ x: m.x, y: m.y, fl: m.f || 0, kind: m.kind, t: Sh.C.NOISE_SHOW });
+  const d = dist(G.me, m) / TILE;
+  playNoise(k.sound, m.me ? 1 : Math.max(0.15, 1 - d / Sh.C.NOISE_RADIUS));
+  if (m.me) addMsg(`You stepped on ${k.name}! The taggers heard that.`, '#ffcc80', 2.5);
+  else if (G.role === 'it') addMsg(`You heard ${k.name} nearby…`, '#ffcc80', 2);
+}
 
 function addMsg(text, color = '#fff', dur = 3) { G.msgs.push({ text, color, t: dur }); if (G.msgs.length > 3) G.msgs.shift(); }
 
@@ -274,6 +297,7 @@ addEventListener('keydown', e => {
   keys.add(e.code);
   if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
   if (e.code === 'KeyM' && !e.repeat) setMusic(!musicOn);
+  if (e.code === 'Space' && !e.repeat) jump();
   if (e.code === 'KeyV' && !e.repeat && G && ui === 'play') {
     const i = VIEWS.findIndex(v => v[0] === viewMode);
     setView(VIEWS[(i + 1) % VIEWS.length][0]);
@@ -296,11 +320,20 @@ addEventListener('mousemove', e => {
   pitch = Math.max(-0.7, Math.min(0.7, pitch - e.movementY * 0.0025));
 });
 
+// jump (space, or a quick double tap on a phone): not while frozen, and not again until you've landed
+function jump() {
+  if (!G || ui !== 'play') return;
+  const meP = G.players.get(myId);
+  if (!meP || meP.fz || G.jumpT >= 0 || G.rest > 0) return;
+  G.jumpT = 0; G.jc++;
+}
+
 // touch: drag anywhere to move
-let joy = null;
+let joy = null, lastTap = 0;
 cvs.addEventListener('touchstart', e => {
   ensureAudio();
   const t = e.changedTouches[0];
+  const now = performance.now(); if (now - lastTap < 300) jump(); lastTap = now;
   if (!joy) joy = { id: t.identifier, ox: t.clientX, oy: t.clientY, x: t.clientX, y: t.clientY };
   e.preventDefault();
 }, { passive: false });
@@ -357,6 +390,34 @@ function thump(time, vol) {
   g.gain.setValueAtTime(0.0001, time); g.gain.exponentialRampToValueAtTime(vol, time + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, time + 0.22);
   o.connect(g).connect(actx.destination); o.start(time); o.stop(time + 0.25);
 }
+// noise-trap sounds, made on the spot: short bursts of filtered noise and little tone sweeps
+let noiseBuf = null;
+function playNoise(sound, vol) {
+  if (!actx || actx.state !== 'running') return;
+  if (!noiseBuf) { noiseBuf = actx.createBuffer(1, actx.sampleRate / 2, actx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  const now = actx.currentTime, out = actx.createGain(); out.gain.value = 0.5 * vol; out.connect(actx.destination);
+  const burst = (t, dur, freq, q, v) => {
+    const src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+    src.buffer = noiseBuf; f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f).connect(g).connect(out); src.start(t); src.stop(t + dur + 0.02);
+  };
+  const tone = (t, dur, f0, f1, type, v) => {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(out); o.start(t); o.stop(t + dur + 0.02);
+  };
+  const r = Math.random;
+  if (sound === 'crunch') for (let i = 0; i < 6; i++) burst(now + i * 0.025 + r() * 0.02, 0.06, 3000 + r() * 3000, 2, 0.8); // shards
+  else if (sound === 'clank') { tone(now, 0.25, 620, 560, 'square', 0.18); tone(now + 0.07, 0.3, 840, 800, 'square', 0.14); burst(now, 0.08, 1800, 3, 0.5); }
+  else if (sound === 'pop') for (let i = 0; i < 5; i++) burst(now + i * 0.06 + r() * 0.03, 0.03, 1200, 1.5, 1);
+  else if (sound === 'squeak') { tone(now, 0.18, 900, 1700, 'sine', 0.5); tone(now + 0.2, 0.16, 1500, 900, 'sine', 0.4); }
+  else if (sound === 'snap') { burst(now, 0.04, 2500, 1, 1); burst(now + 0.09, 0.05, 1600, 1, 0.8); }
+  else if (sound === 'rustle') for (let i = 0; i < 10; i++) burst(now + i * 0.04, 0.08, 4000 + r() * 2000, 0.8, 0.35);
+  else if (sound === 'thud') for (let i = 0; i < 4; i++) { tone(now + i * 0.09, 0.14, 150 - i * 15, 60, 'sine', 0.7 - i * 0.12); burst(now + i * 0.09, 0.05, 700, 1, 0.5); } // books toppling
+}
+
 function heartbeat() {
   if (!actx || actx.state !== 'running' || !G || ui !== 'play' || G.danger < 0.05) return;
   const now = actx.currentTime;
@@ -380,6 +441,11 @@ function update(dt) {
     p.walk = moving ? p.walk + dt * 12 : 0;
   }
   G.fade = Math.max(0, G.fade - dt * 2.2);
+  // jumps in progress (yours, and other people's)
+  if (G.jumpT >= 0) { G.jumpT += dt; if (G.jumpT >= JUMP_T) { G.jumpT = -1; G.rest = JUMP_REST; } } else G.rest = Math.max(0, G.rest - dt);
+  for (const p of G.players.values()) if (p.jumpT >= 0 && (p.jumpT += dt) >= JUMP_T) p.jumpT = -1;
+  for (const n of G.noises) n.t -= dt;
+  G.noises = G.noises.filter(n => n.t > 0);
   // doors swing open when anyone comes close, and fall shut after
   if (G.doors.length) {
     const near = [G.me, ...[...G.players.values()].map(p => ({ x: p.rx, y: p.ry }))];
@@ -436,23 +502,27 @@ function update(dt) {
   }
   if ((mx || my) && !stuck) {
     const bx = G.me.x, by = G.me.y, speed = PLAYER_SPEED * (G.role === 'it' ? TAGGER_SPEED : 1);
-    Sh.moveCircle(G, G.me, mx * speed * dt, my * speed * dt, PLAYER_R);
+    Sh.moveCircle(Sh.world(G, G.fl), G.me, mx * speed * dt, my * speed * dt, PLAYER_R);
     G.moving = G.me.x !== bx || G.me.y !== by;
+    const fl = Sh.nextFloor(G, G.me.x, G.me.y, G.fl); // up or down a staircase
+    if (fl !== G.fl) { G.fl = fl; addMsg(fl ? 'Upstairs' : 'Ground floor', '#ffe9a8', 1.5); }
   }
   G.walk = G.moving ? G.walk + dt * 12 : 0;
   aim = Math.atan2(Math.sin(aim), Math.cos(aim)); // keep it in -PI..PI
 
   const now = performance.now();
   const turned = G.sentA === null || Math.abs(aim - G.sentA) > 0.03;
-  if (now - G.lastSent > 50 && (G.me.x !== G.sentX || G.me.y !== G.sentY || turned)) {
-    send({ t: 'pos', x: Math.round(G.me.x * 10) / 10, y: Math.round(G.me.y * 10) / 10, a: Math.round(aim * 100) / 100, s: G.tpSeq });
-    G.lastSent = now; G.sentX = G.me.x; G.sentY = G.me.y; G.sentA = aim;
+  if ((now - G.lastSent > 50 && (G.me.x !== G.sentX || G.me.y !== G.sentY || turned)) || G.jc !== G.sentJ) {
+    send({ t: 'pos', x: Math.round(G.me.x * 10) / 10, y: Math.round(G.me.y * 10) / 10, a: Math.round(aim * 100) / 100, s: G.tpSeq, j: G.jc });
+    G.lastSent = now; G.sentX = G.me.x; G.sentY = G.me.y; G.sentA = aim; G.sentJ = G.jc;
   }
 }
 
 // ---------------------------------------------------------------- line of sight
+// what blocks your view: the floor you're on (in the library, upstairs has its own walls)
+const viewWorld = () => Sh.world(G, G.fl);
 // distance a ray travels from (ox, oy) before hitting a wall (grid DDA), capped at maxD
-function castRay(ox, oy, ang, maxD) {
+function castRay(ox, oy, ang, maxD, w = viewWorld()) {
   const dx = Math.cos(ang), dy = Math.sin(ang);
   let tx = Math.floor(ox / TILE), ty = Math.floor(oy / TILE);
   const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
@@ -463,10 +533,10 @@ function castRay(ox, oy, ang, maxD) {
     let t;
     if (nx < ny) { t = nx; nx += ddx; tx += sx; } else { t = ny; ny += ddy; ty += sy; }
     if (t >= maxD) return maxD;
-    if (Sh.blocksLight(G, tx, ty)) return t;
+    if (Sh.blocksLight(w, tx, ty)) return t;
   }
 }
-const hasLOS = (a, b) => { const d = dist(a, b); return castRay(a.x, a.y, Math.atan2(b.y - a.y, b.x - a.x), d) >= d - 1; };
+const hasLOS = (a, b, w) => { const d = dist(a, b); return castRay(a.x, a.y, Math.atan2(b.y - a.y, b.x - a.x), d, w) >= d - 1; };
 
 // the area a viewer can see: polygon points from casting rays between two angles
 function visPoly(o, a0, a1, n, r) {
@@ -479,6 +549,13 @@ function visPoly(o, a0, a1, n, r) {
 }
 function isLit(view, pt) {
   const d = dist(view, pt);
+  if (G.upper) { // two floors: on the same floor as usual; between floors only through the open atrium (or a stairwell)
+    const ev = Sh.elev(G, view), ep = Sh.elev(G, pt);
+    if (Math.abs(ev - ep) >= 0.5) {
+      const low = ev < ep ? view : pt;
+      return d <= R_BRIGHT && Sh.openAbove(G, low.x, low.y) && hasLOS(view, pt, Sh.world(G, 1));
+    }
+  }
   if (G.bright) return d <= R_BRIGHT && hasLOS(view, pt);
   if (d > R_FAR || !hasLOS(view, pt)) return false;
   if (d < R_NEAR) return true;
@@ -486,7 +563,7 @@ function isLit(view, pt) {
 }
 
 // ---------------------------------------------------------------- map rendering (prerendered once per game)
-let mapCanvas, miniCanvas;
+let mapCanvas, miniCanvas, mapUp, miniUp; // (mapUp, miniUp: the library's upper floor)
 function shade(hex, k) {
   const n = parseInt(hex.slice(1), 16);
   const c = v => Math.max(0, Math.min(255, Math.round(v * k)));
@@ -497,9 +574,16 @@ function renderMaps() {
   mapCanvas.width = COLS * TILE; mapCanvas.height = ROWS * TILE;
   const m = mapCanvas.getContext('2d');
   const FACE = 14; // visible front face of walls, for a bit of depth
-  if (G.map === 'apartment') drawApartmentMap(m, G);
+  mapUp = miniUp = null;
+  if (G.upper) { // the library: one picture per floor (upstairs has see-through holes over the atrium and the stairs)
+    drawLibraryMap(m, G, 0);
+    mapUp = document.createElement('canvas'); mapUp.width = COLS * TILE; mapUp.height = ROWS * TILE;
+    drawLibraryMap(mapUp.getContext('2d'), G, 1);
+  }
+  else if (G.map === 'apartment') drawApartmentMap(m, G);
   else if (G.map === 'forest') drawForestMap(m, G);
   else if (G.map === 'office') drawOfficeMap(m, G);
+  else if (G.map === 'mall') drawMallMap(m, G);
   else for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
     const px = x * TILE, py = y * TILE;
     if (G.grid[y][x] === 0) {
@@ -544,6 +628,17 @@ function renderMaps() {
   for (const s of G.stairs) n.fillRect(s.x * MINI, s.y * MINI, MINI, MINI);
   n.fillStyle = 'rgba(255,233,168,.45)';
   for (const f of G.flights) n.fillRect(f.x * MINI, f.y0 * MINI, MINI, (f.y1 - f.y0 + 1) * MINI);
+  if (G.upper) { // the library: a minimap per floor, the staircases marked on both
+    miniUp = document.createElement('canvas'); miniUp.width = miniCanvas.width; miniUp.height = miniCanvas.height;
+    const u = miniUp.getContext('2d');
+    u.fillStyle = '#0e0e18'; u.fillRect(0, 0, miniUp.width, miniUp.height);
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+      const v = G.upper[y][x];
+      if (v === 1) { u.fillStyle = '#3a3654'; u.fillRect(x * MINI, y * MINI, MINI, MINI); }
+      else if (v === 4) { u.fillStyle = '#05050a'; u.fillRect(x * MINI, y * MINI, MINI, MINI); }
+    }
+    for (const c of [n, u]) { c.fillStyle = 'rgba(255,233,168,.6)'; for (const r of G.ramps) c.fillRect(r.x0 * MINI, r.y0 * MINI, (r.x1 - r.x0 + 1) * MINI, (r.y1 - r.y0 + 1) * MINI); }
+  }
 }
 
 // ---------------------------------------------------------------- sprites
@@ -641,6 +736,72 @@ function drawTagMarks(p, x, y, t) {
   }
 }
 
+// noise traps lying on the floor; one that just went off jiggles
+function drawTrap(t, time) {
+  const cx = center(t.x) + (t.hot ? Math.sin(time * 40) * 1.5 : 0), cy = center(t.y);
+  ctx.save(); ctx.translate(cx, cy);
+  switch (t.kind) {
+    case 'glass': case 'mug': // shards
+      for (let i = 0; i < 6; i++) {
+        const a = i * 1.05 + t.id, r = 4 + (i % 3) * 3;
+        ctx.save(); ctx.translate(Math.cos(a) * r, Math.sin(a) * r); ctx.rotate(a * 2);
+        ctx.fillStyle = t.kind === 'glass' ? 'rgba(190,230,250,.85)' : (i % 2 ? '#f4f1ea' : '#e85d5d');
+        ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(3.5, 3); ctx.lineTo(-3, 2.5); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 0.8; ctx.stroke();
+        ctx.restore();
+      }
+      if (t.kind === 'mug') { ctx.strokeStyle = '#f4f1ea'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(7, -5, 3.5, -1, 2); ctx.stroke(); }
+      break;
+    case 'cans': // a few tin cans knocked over
+      for (let i = 0; i < 3; i++) {
+        ctx.save(); ctx.translate(-7 + i * 7, (i % 2) * 5 - 2); ctx.rotate(0.6 * i - 0.4);
+        ctx.fillStyle = '#9aa3ad'; ctx.fillRect(-5, -3, 10, 6); ctx.fillStyle = ['#e85d5d', '#4aa3df', '#f2b43b'][i]; ctx.fillRect(-3, -3, 6, 6);
+        ctx.fillStyle = '#c9d0d6'; ctx.beginPath(); ctx.ellipse(5, 0, 1.5, 3, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+      break;
+    case 'bubble': // a sheet of bubble wrap
+      ctx.fillStyle = 'rgba(220,240,250,.55)'; ctx.fillRect(-11, -9, 22, 18); ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 0.8;
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++) { ctx.beginPath(); ctx.arc(-7.5 + i * 5, -5 + j * 5, 1.8, 0, Math.PI * 2); ctx.stroke(); }
+      break;
+    case 'toy': // a squeaky rubber duck
+      ctx.fillStyle = '#f7d038'; ctx.beginPath(); ctx.ellipse(0, 2, 8, 6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(4, -4, 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#f08a24'; ctx.beginPath(); ctx.moveTo(8, -4); ctx.lineTo(12, -3); ctx.lineTo(8, -2); ctx.fill();
+      ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(5, -5, 0.9, 0, Math.PI * 2); ctx.fill();
+      break;
+    case 'twigs': // dry sticks
+      ctx.strokeStyle = '#8a6a48'; ctx.lineCap = 'round';
+      for (let i = 0; i < 5; i++) { const a = i * 0.7 + t.id; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(Math.cos(a) * -10, Math.sin(a) * -10); ctx.lineTo(Math.cos(a) * 10, Math.sin(a) * 10); ctx.stroke(); }
+      break;
+    case 'leaves': // a pile of dry leaves
+      for (let i = 0; i < 9; i++) { const a = i * 0.7 + t.id; ctx.fillStyle = ['#c7742e', '#a85a24', '#d99a3a'][i % 3]; ctx.beginPath(); ctx.ellipse(Math.cos(a) * 7, Math.sin(a) * 6, 4.5, 2.5, a, 0, Math.PI * 2); ctx.fill(); }
+      break;
+    case 'books': // a toppled pile of books
+      for (let i = 0; i < 5; i++) {
+        ctx.save(); ctx.rotate(i * 1.3 + t.id); ctx.translate((i % 3 - 1) * 5, (i % 2) * 4 - 2);
+        ctx.fillStyle = ['#c0392b', '#2e86c1', '#27ae60', '#f39c12', '#8e44ad'][i]; ctx.fillRect(-7, -5, 14, 10);
+        ctx.fillStyle = '#f4efe2'; ctx.fillRect(-5, -5, 11, 2); ctx.restore();
+      }
+      break;
+  }
+  ctx.restore();
+}
+
+// where a noise came from: rings spreading out from the spot (shown through walls; you heard it)
+function drawNoisePing(n, time) {
+  const k = n.t / Sh.C.NOISE_SHOW;
+  ctx.save();
+  for (let i = 0; i < 3; i++) {
+    const r = 10 + ((time * 40 + i * 18) % 54);
+    ctx.strokeStyle = `rgba(255,183,77,${k * (1 - r / 64)})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.fillStyle = `rgba(255,183,77,${k})`; ctx.beginPath(); ctx.arc(n.x, n.y, 10, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = `rgba(40,20,0,${k})`; ctx.font = 'bold 14px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('!', n.x, n.y + 1);
+  ctx.restore();
+}
+
 function nameTag(text, x, y, color) {
   ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(text, x, y);
@@ -649,10 +810,12 @@ function nameTag(text, x, y, color) {
 
 // ---------------------------------------------------------------- frame
 // you always see through your own eyes (frozen runners included: they can still turn and look around)
-function getView() { return { x: G.me.x, y: G.me.y, a: aim, id: myId }; }
+function getView() { return { x: G.me.x, y: G.me.y, fl: G.fl, a: aim, id: myId }; }
 // Who you can see: yourself, and anyone in your light. Your teammates also show through the dark as a ring
 // and a name (so runners can find frozen friends), but the other side only shows up when you can actually see them.
-const posOf = (id, p) => id === myId ? { x: G.me.x, y: G.me.y } : { x: p.rx, y: p.ry };
+const posOf = (id, p) => id === myId ? { x: G.me.x, y: G.me.y, fl: G.fl } : { x: p.rx, y: p.ry, fl: p.fl };
+// how high someone is, in floors (the apartment's flights of stairs, or the library's floors and staircases)
+const heightAt = pos => G.upper ? Sh.elev(G, pos) : Sh.stairHeight(G.flights, pos.x, pos.y);
 const canSee = (view, id, p, pos) => id === myId || isLit(view, pos);
 
 // first / third person: same visibility rules as top-down, drawn in 3D by view3d.js
@@ -663,12 +826,12 @@ function draw3D(t) {
     const pos = posOf(id, p), self = id === myId;
     players.set(id, {
       ...pos, a: self ? aim : p.ra, walk: self ? G.walk : p.walk, role: p.role, fz: p.fz, imm: p.imm, rp: p.rp,
-      show: canSee(view, id, p, pos), mark: !self && isTeammate(p), h: Sh.stairHeight(G.flights, pos.x, pos.y),
+      show: canSee(view, id, p, pos), mark: !self && isTeammate(p), h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * JUMP_3D,
     });
   }
   v3d.render({
-    G, view, t, mode: viewMode, players,
-    pitch, flicker: G.flicker, walk: G.walk, viewH: Sh.stairHeight(G.flights, view.x, view.y),
+    G, view, t, mode: viewMode, players, noises: G.noises,
+    pitch, flicker: G.flicker, walk: G.walk, viewH: heightAt(view), viewJump: jumpK(G.jumpT) * JUMP_3D,
     backRoom: castRay(view.x, view.y, view.a + Math.PI, 2.2 * TILE), // room behind you for the third-person camera
   });
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cvs.width, cvs.height);
@@ -682,17 +845,25 @@ function drawWorld(t) {
   ctx.fillStyle = '#07070d'; ctx.fillRect(0, 0, W, H);
   T(ctx, 1);
   ctx.drawImage(mapCanvas, 0, 0);
+  if (mapUp && G.fl) { // upstairs: the ground floor shows (dimmer) only through the holes in the floor
+    ctx.fillStyle = 'rgba(12,14,24,.42)'; ctx.fillRect(0, 0, COLS * TILE, ROWS * TILE);
+    ctx.drawImage(mapUp, 0, 0);
+  }
   if (G.doors.length) drawDoors2D(ctx, G);
+  for (const tr of G.traps) if ((tr.fl || 0) === G.fl) drawTrap(tr, t);
 
   // everyone you can see, sorted by y so characters lower on screen draw in front
   const actors = [];
   for (const [id, p] of G.players) {
     const pos = posOf(id, p), self = id === myId;
     if (!canSee(view, id, p, pos)) continue;
-    actors.push({ y: pos.y, draw: () => {
+    const below = G.upper && Sh.elev(G, pos) < Sh.elev(G, view) - 0.5; // seen down in the atrium from the gallery
+    const up = jumpK(self ? G.jumpT : p.jumpT) * JUMP_PX;
+    actors.push({ y: pos.y + (below ? -1e5 : 0), draw: () => {
       const blink = p.imm && Math.floor(t * 10) % 2; // just unfrozen: can't be tagged for a moment
-      drawPerson(ctx, p.char, pos.x, pos.y, p.fz ? shade(COLORS[p.slot], 0.75) : COLORS[p.slot], self ? G.flip : p.flip, self ? G.walk : p.walk, blink ? 0.45 : 1, p.slot);
-      drawTagMarks(p, pos.x, pos.y, t);
+      if (up) { ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(pos.x, pos.y + 15, 11 * (1 - up / 60), 4, 0, 0, Math.PI * 2); ctx.fill(); } // their shadow stays on the floor
+      drawPerson(ctx, p.char, pos.x, pos.y - up, p.fz ? shade(COLORS[p.slot], 0.75) : COLORS[p.slot], self ? G.flip : p.flip, self ? G.walk : p.walk, (blink ? 0.45 : 1) * (below ? 0.7 : 1), p.slot);
+      drawTagMarks(p, pos.x, pos.y - up, t);
     } });
   }
   actors.sort((a, b) => a.y - b.y).forEach(a => a.draw());
@@ -711,7 +882,9 @@ function drawWorld(t) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(mask, 0, 0);
     T(ctx, 1);
-    drawOfficeLamps(ctx, G);
+    if (G.office) drawOfficeLamps(ctx, G);
+    if (G.mall) drawMallGlow(ctx, G, t);
+    if (G.library) drawLibraryGlow(ctx, G, t);
   } else {
     mctx.fillStyle = 'rgba(4,4,10,0.9)'; mctx.fillRect(0, 0, mask.width, mask.height);
     T(mctx, 1);
@@ -737,6 +910,7 @@ function drawWorld(t) {
   }
 
   if (G.forest) drawForestGlow(ctx, G, t); // the campfire and fireflies glow through the dark
+  for (const n of G.noises) drawNoisePing(n, t);
   // on top of the dark: names of everyone you can see, and your teammates' markers wherever they are
   for (const [id, p] of G.players) {
     const pos = posOf(id, p), self = id === myId, seen = canSee(view, id, p, pos), mate = !self && isTeammate(p);
@@ -747,7 +921,8 @@ function drawWorld(t) {
       ctx.beginPath(); ctx.arc(pos.x, pos.y, 18, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
       if (p.fz) { ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#bfefff'; ctx.fillText('❄', pos.x, pos.y); }
     }
-    nameTag(p.role === 'it' ? `${p.name} · IT` : p.fz ? `${p.name} · frozen` : p.name, pos.x, pos.y - 46, col);
+    const updown = !G.upper || self ? '' : p.fl > G.fl ? ' ↑' : p.fl < G.fl ? ' ↓' : ''; // on the floor above or below you
+    nameTag((p.role === 'it' ? `${p.name} · IT` : p.fz ? `${p.name} · frozen` : p.name) + updown, pos.x, pos.y - 46, col);
   }
   if (G.floors.length > 1) { // other floors are out of sight: black out everything beyond this floor's walls
     const f = G.floors[Sh.floorOf(G.floors, view.x)];
@@ -767,12 +942,17 @@ function fillPoly(c, pts, style) {
 // ---------------------------------------------------------------- HUD
 function drawMinimap(x, y) {
   ctx.save(); ctx.translate(x, y);
-  ctx.globalAlpha = 0.85; ctx.drawImage(miniCanvas, 0, 0); ctx.globalAlpha = 1;
-  for (const [id, p] of G.players) { // your teammates (frozen ones as an icy ring)
+  ctx.globalAlpha = 0.85; ctx.drawImage(miniUp && G.fl ? miniUp : miniCanvas, 0, 0); ctx.globalAlpha = 1;
+  for (const [id, p] of G.players) { // your teammates (frozen ones as an icy ring; fainter if they're on the other floor)
     if (id === myId || !isTeammate(p)) continue;
     const px = p.rx / TILE * MINI, py = p.ry / TILE * MINI;
+    ctx.globalAlpha = G.upper && p.fl !== G.fl ? 0.45 : 1;
     if (p.fz) { ctx.strokeStyle = '#7fd4ff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, 3.2, 0, Math.PI * 2); ctx.stroke(); }
     else { ctx.fillStyle = COLORS[p.slot]; ctx.beginPath(); ctx.arc(px, py, 2.2, 0, Math.PI * 2); ctx.fill(); }
+  }
+  ctx.globalAlpha = 1;
+  for (const n of G.noises) if (Math.floor(n.t * 6) % 2) { // noises you heard, flashing
+    ctx.fillStyle = '#ffb74d'; ctx.beginPath(); ctx.arc(n.x / TILE * MINI, n.y / TILE * MINI, 3.5, 0, Math.PI * 2); ctx.fill();
   }
   // you: an arrow showing where your headlight points
   ctx.save(); ctx.translate(G.me.x / TILE * MINI, G.me.y / TILE * MINI); ctx.rotate(aim + Math.PI / 2);
@@ -780,6 +960,10 @@ function drawMinimap(x, y) {
   ctx.beginPath(); ctx.moveTo(0, -5); ctx.lineTo(3.5, 3); ctx.lineTo(-3.5, 3); ctx.closePath(); ctx.fill(); ctx.stroke();
   ctx.restore();
   ctx.strokeStyle = '#2c2a40'; ctx.lineWidth = 1; ctx.strokeRect(0, 0, COLS * MINI, ROWS * MINI);
+  if (G.upper) { // which floor of the library you're on
+    ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillStyle = '#ffe9a8';
+    ctx.fillText(G.fl ? 'UPSTAIRS' : 'GROUND FLOOR', COLS * MINI / 2, ROWS * MINI + 3);
+  }
   if (G.floors.length > 1) { // floor labels under the minimap; yours is highlighted
     ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
     G.floors.forEach((f, i) => {

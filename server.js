@@ -7,8 +7,8 @@ const { WebSocketServer } = require('ws');
 const Sh = require('./public/shared.js');
 
 const { TILE, COLS, ROWS, PLAYER_SPEED, PLAYER_R, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, TAG_DIST, RESCUE_DIST, RESCUE_TIME,
-  IMMUNE, HOLD, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT } = Sh.C;
-const { I, center, tileOf, dist, rand, bfs } = Sh;
+  IMMUNE, HOLD, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT, TRAP_STEP, TRAP_COOLDOWN, NOISE_RADIUS, JUMP_T, JUMP_REST } = Sh.C;
+const { I, center, tileOf, dist, rand } = Sh;
 const PORT = Number(process.env.PORT) || 3000;
 const TICK_MS = 50;
 
@@ -148,15 +148,16 @@ function startGame(r) {
   const n = cl.length;
   const level = Sh.genLevel(r.map), grid = level.grid;
   const links = Sh.stairLinks(level.stairs);
-  const open = (x, y) => grid[y][x] === 0;
-  const dSpawn = bfs(level.spawns[0][0], level.spawns[0][1], open, links).d;
+  const reach = Sh.reach(level, level.spawns[0][0], level.spawns[0][1]), dSpawn = reach.d, N = reach.N;
   let maxD = 0; for (const v of dSpawn) if (v > maxD) maxD = v;
 
   // roles: random taggers; runners start at the map's spawn, taggers far away from them (and from each other)
   const taggers = new Set(shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
   const far = [];
-  for (const k of [0.6, 0]) { // (anywhere reachable, if no spot is that far away)
-    for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) if (open(x, y) && dSpawn[I(x, y)] > maxD * k) far.push({ x, y });
+  for (const k of [0.6, 0]) { // (anywhere reachable, if no spot is that far away; never on a staircase)
+    reach.grids.forEach((gr, fl) => {
+      for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) if (gr[y][x] === 0 && !reach.ramp[I(x, y)] && dSpawn[fl * N + I(x, y)] > maxD * k) far.push({ x, y, fl });
+    });
     if (far.length) break;
   }
   const taggerSpots = [];
@@ -169,23 +170,26 @@ function startGame(r) {
   const now = Date.now();
   let runnerIdx = 0, taggerIdx = 0;
   const g = {
-    time: 0, roundTime: r.roundTime, grid, floors: level.floors, stairs: level.stairs, links,
+    time: 0, roundTime: r.roundTime, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
     stairAt: new Map(level.stairs.map(s => [I(s.x, s.y), s])),
     players: cl.map(c => {
       const it = taggers.has(c.id), spot = it ? taggerSpots[taggerIdx++] : { x: level.spawns[runnerIdx][0], y: level.spawns[runnerIdx++][1] };
       return {
         id: c.id, slot: c.slot, name: c.name, char: c.char, role: it ? 'it' : 'run',
-        x: center(spot.x), y: center(spot.y), yaw: level.yaw ?? Sh.START_YAW,
+        x: center(spot.x), y: center(spot.y), fl: spot.fl || 0, yaw: level.yaw ?? Sh.START_YAW, jumps: 0, airUntil: 0,
         frozen: false, immune: 0, rescue: 0, rescuer: null, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now,
       };
     }),
   };
 
+  g.traps = placeTraps(level, reach);
+
   clearInterval(r.timer);
   r.game = g; r.state = 'play'; r.last = now;
-  const roster = g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, char: p.char, role: p.role, x: p.x, y: p.y }));
-  const deco = { flights: level.flights || [], rooms: level.rooms || [], furniture: level.furniture || [], doors: level.doors || [], forest: level.forest || null, office: level.office || null };
-  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD });
+  const roster = g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, char: p.char, role: p.role, x: p.x, y: p.y, fl: p.fl }));
+  const deco = { flights: level.flights || [], rooms: level.rooms || [], furniture: level.furniture || [], doors: level.doors || [], forest: level.forest || null, office: level.office || null, mall: level.mall || null, bright: !!level.bright,
+    upper: level.upper || null, ramps: level.ramps || [], library: level.library || null };
+  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, traps: g.traps.map(({ id, x, y, fl, kind }) => ({ id, x, y, fl, kind })) });
   broadcastLobby(r);
   const its = g.players.filter(p => p.role === 'it'), names = its.map(p => p.name).join(' and ');
   for (const p of g.players) {
@@ -203,25 +207,33 @@ function onPos(r, c, m) {
   if (!p) return;
   if (Number.isFinite(m.a)) p.yaw = m.a % (Math.PI * 2); // which way you face (and your headlight points)
   if (m.s !== p.tpSeq) return;
+  // a jump (the client counts them): in the air for a moment, so you don't set off noise traps. Not while frozen.
+  const now0 = Date.now();
+  if (Number.isInteger(m.j) && m.j > p.jumps) {
+    if (!p.frozen && now0 >= p.airUntil + JUMP_REST * 1000 - 100) p.airUntil = now0 + JUMP_T * 1000;
+    p.jumps = m.j;
+  }
   if (p.frozen || (p.role === 'it' && g.time < HOLD)) { if (Math.hypot(m.x - p.x, m.y - p.y) > 2) teleport(r, p, p.x, p.y); return; }
   const x = Number(m.x), y = Number(m.y), now = Date.now();
   const dt = (now - p.lastPosT) / 1000;
   const speed = PLAYER_SPEED * (p.role === 'it' ? TAGGER_SPEED : 1);
   const allowed = speed * Math.max(dt, 0.05) * 1.6 + 10;
-  if (!Number.isFinite(x) || !Number.isFinite(y) || Math.hypot(x - p.x, y - p.y) > allowed || Sh.collides(g, x, y, PLAYER_R - 3)) {
+  const fl = Number.isFinite(x) && Number.isFinite(y) ? Sh.nextFloor(g, x, y, p.fl) : p.fl; // walking up or down a staircase
+  if (!Number.isFinite(x) || !Number.isFinite(y) || Math.hypot(x - p.x, y - p.y) > allowed || Sh.collides(Sh.world(g, fl), x, y, PLAYER_R - 3)) {
     teleport(r, p, p.x, p.y);
     return;
   }
-  p.x = x; p.y = y; p.lastPosT = now;
+  p.x = x; p.y = y; p.fl = fl; p.lastPosT = now;
 }
 function teleport(r, p, x, y, a) { // `a`: face this way afterwards (used by stairs)
   p.x = x; p.y = y; p.tpSeq++; p.lastPosT = Date.now();
   const c = r.clients.get(p.id);
-  if (c) send(c.ws, { t: 'tp', x, y, s: p.tpSeq, a });
+  if (c) send(c.ws, { t: 'tp', x, y, s: p.tpSeq, a, f: p.fl });
 }
 
 // ---------------------------------------------------------------- simulation
-const sameFloor = (g, a, b) => Sh.floorOf(g.floors, a.x) === Sh.floorOf(g.floors, b.x);
+// on the same floor: in the library, within half a floor of each other (so two people half way up a staircase count)
+const sameFloor = (g, a, b) => g.upper ? Math.abs(Sh.elev(g, a) - Sh.elev(g, b)) < 0.5 : Sh.floorOf(g.floors, a.x) === Sh.floorOf(g.floors, b.x);
 
 function tick(r) {
   const g = r.game, now = Date.now();
@@ -241,6 +253,7 @@ function tick(r) {
   }
 
   const runners = g.players.filter(p => p.role === 'run'), its = g.players.filter(p => p.role === 'it');
+  stepOnTraps(r, runners, dt);
   // taggers freeze any free runner they touch
   if (g.time >= HOLD) for (const T of its) for (const p of runners) {
     if (p.frozen || p.immune > 0 || !sameFloor(g, T, p) || dist(T, p) > TAG_DIST) continue;
@@ -261,6 +274,44 @@ function tick(r) {
   }
   checkWin(r);
   if (r.state === 'play') sendSnapshots(r);
+}
+
+// ---------------------------------------------------------------- noise traps
+// Noisy things scattered over the floor (every floor of the library), never near where the runners start, never
+// on stairs, and spread out. About one for every 45 free tiles, between 8 and 18 (up to 26 with two floors).
+function placeTraps(level, reach) {
+  const kinds = Sh.MAP_TRAPS[level.name] || Sh.MAP_TRAPS.building;
+  const stairs = new Set([...(level.flights || []).flatMap(f => Array.from({ length: f.y1 - f.y0 + 1 }, (_, i) => I(f.x, f.y0 + i))), ...level.stairs.map(s => I(s.x, s.y))]);
+  const cands = [];
+  reach.grids.forEach((gr, fl) => {
+    for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++)
+      if (gr[y][x] === 0 && reach.d[fl * reach.N + I(x, y)] >= 6 && !stairs.has(I(x, y)) && !reach.ramp[I(x, y)]) cands.push({ x, y, fl });
+  });
+  const n = Math.max(8, Math.min(8 + 10 * reach.grids.length, Math.round(cands.length / 45))), traps = [];
+  for (const t of shuffleArr(cands)) {
+    if (traps.length >= n) break;
+    if (traps.some(o => o.fl === t.fl && Math.abs(o.x - t.x) + Math.abs(o.y - t.y) < 4)) continue;
+    traps.push({ id: traps.length, x: t.x, y: t.y, fl: t.fl, kind: kinds[rand(kinds.length)], cd: 0 });
+  }
+  return traps;
+}
+
+// a free runner stepping right onto a trap sets it off: everyone close enough on the same floor hears it
+function stepOnTraps(r, runners, dt) {
+  const g = r.game;
+  for (const t of g.traps) {
+    t.cd = Math.max(0, t.cd - dt);
+    if (t.cd > 0) continue;
+    const spot = { x: center(t.x), y: center(t.y), fl: t.fl }, now = Date.now();
+    const p = runners.find(p => !p.frozen && now >= p.airUntil && sameFloor(g, p, spot) && dist(p, spot) <= TRAP_STEP); // (jump over it and it stays quiet)
+    if (!p) continue;
+    t.cd = TRAP_COOLDOWN;
+    for (const o of g.players) {
+      const c = r.clients.get(o.id);
+      if (!c || (o !== p && (!sameFloor(g, o, spot) || dist(o, spot) > NOISE_RADIUS * TILE))) continue;
+      send(c.ws, { t: 'noise', id: t.id, x: spot.x, y: spot.y, f: t.fl, kind: t.kind, me: o === p });
+    }
+  }
 }
 
 // taggers win when every runner is frozen; runners win if anyone's still free when time runs out
@@ -293,10 +344,10 @@ function endGame(r, winner, reason) {
 function sendSnapshots(r) {
   const g = r.game;
   const shared = {
-    time: g.time,
+    time: g.time, tc: g.traps.filter(t => t.cd > 0).map(t => t.id), // traps that just went off
     players: g.players.map(p => ({
       id: p.id, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.yaw * 100) / 100,
-      fz: p.frozen, imm: p.immune > 0, rp: Math.round(p.rescue * 100) / 100, tags: p.tags,
+      fz: p.frozen, imm: p.immune > 0, rp: Math.round(p.rescue * 100) / 100, tags: p.tags, f: p.fl, j: p.jumps,
     })),
   };
   for (const p of g.players) {

@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { buildApartment, updateApartment } from './apartment3d.js';
 import { buildForest, updateForest } from './forest3d.js';
 import { buildOffice } from './office3d.js';
+import { buildMall, updateMall } from './mall3d.js';
+import { buildLibrary, updateLibrary } from './library3d.js';
 import { clay, rbox, blob, clayifyScene, createClayFX, resetClay } from './clay.js';
 
 const Sh = window.Shared;
@@ -91,6 +93,74 @@ function addTagBits(model, role) {
   return { ring, ice, rescue };
 }
 
+// a noise trap lying on the floor, in clay (centred on its tile; the group sits on the floor)
+function makeTrap(t) {
+  const g = new THREE.Group(), seed = t.id * 7.3;
+  const piece = (geo, mat, x, y, z, ry = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.y = ry; g.add(m); return m; };
+  switch (t.kind) {
+    case 'glass': case 'mug': // shards (a smashed mug also has its handle)
+      for (let i = 0; i < 7; i++) {
+        const a = i * 0.9 + seed, r = 0.06 + (i % 3) * 0.05;
+        const shard = piece(new THREE.TetrahedronGeometry(0.045 + (i % 2) * 0.02), t.kind === 'glass'
+          ? new THREE.MeshPhysicalMaterial({ color: '#cfeeff', transparent: true, opacity: 0.7, roughness: 0.05, clearcoat: 1 })
+          : clay(i % 2 ? '#f4f1ea' : '#e85d5d'), Math.cos(a) * r, 0.02, Math.sin(a) * r, a);
+        shard.scale.y = 0.4;
+      }
+      if (t.kind === 'mug') piece(new THREE.TorusGeometry(0.05, 0.012, 6, 12, Math.PI), clay('#f4f1ea'), 0.12, 0.02, -0.1).rotation.x = Math.PI / 2;
+      break;
+    case 'cans':
+      ['#e85d5d', '#4aa3df', '#f2b43b'].forEach((c, i) => {
+        const can = piece(new THREE.CylinderGeometry(0.05, 0.05, 0.13, 14), clay(c), -0.14 + i * 0.13, 0.05, (i % 2) * 0.1 - 0.04, i * 0.8);
+        can.rotation.z = Math.PI / 2;
+      });
+      break;
+    case 'bubble': {
+      piece(rbox(0.42, 0.015, 0.34, 0.006, 0), new THREE.MeshPhysicalMaterial({ color: '#e6f6ff', transparent: true, opacity: 0.6, roughness: 0.1 }), 0, 0.008, 0, seed);
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 3; j++) piece(new THREE.SphereGeometry(0.025, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshPhysicalMaterial({ color: '#ffffff', transparent: true, opacity: 0.55, roughness: 0.05 }), -0.15 + i * 0.1, 0.015, -0.1 + j * 0.1);
+      break;
+    }
+    case 'toy': { // a rubber duck
+      const yellow = clay('#f7d038');
+      piece(blob(0.09, 2, 0.004), yellow, 0, 0.07, 0).scale.set(1.3, 0.85, 1);
+      piece(blob(0.06, 2, 0.003), yellow, 0.07, 0.15, 0);
+      piece(new THREE.ConeGeometry(0.025, 0.06, 8).rotateZ(-Math.PI / 2), clay('#f08a24'), 0.14, 0.14, 0);
+      for (const z of [-0.025, 0.025]) piece(new THREE.SphereGeometry(0.01, 6, 4), clay('#222'), 0.115, 0.17, z);
+      g.rotation.y = seed;
+      break;
+    }
+    case 'twigs':
+      for (let i = 0; i < 5; i++) { const stick = piece(new THREE.CylinderGeometry(0.012, 0.015, 0.4, 5), clay('#8a6a48'), 0, 0.015, 0, i * 0.7 + seed); stick.rotation.z = Math.PI / 2; }
+      break;
+    case 'books': // a toppled pile of books
+      ['#a8322a', '#2e6fa1', '#2f8a55', '#d08a26', '#71408f'].forEach((c, i) => {
+        const b = piece(rbox(0.22, 0.05, 0.16, 0.01, 0), clay(c), Math.cos(i * 1.9 + seed) * 0.08, 0.025 + (i % 3) * 0.045, Math.sin(i * 1.9 + seed) * 0.07, i * 1.3 + seed);
+        b.rotation.z = (i % 2) * 0.25;
+      });
+      break;
+    case 'leaves':
+      for (let i = 0; i < 10; i++) { const a = i * 0.7 + seed; piece(blob(0.05, 1, 0.01, i), clay(['#c7742e', '#a85a24', '#d99a3a'][i % 3]), Math.cos(a) * 0.14, 0.012 + (i % 3) * 0.006, Math.sin(a) * 0.12, a).scale.set(1.2, 0.2, 0.7); }
+      break;
+  }
+  g.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
+  return g;
+}
+
+// the alert where a noise came from: an orange "!" with a ring around it, seen through walls (you heard it)
+let pingTex = null;
+function pingSprite() {
+  pingTex = pingTex || (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const x = c.getContext('2d');
+    x.strokeStyle = '#ffb74d'; x.lineWidth = 8; x.beginPath(); x.arc(64, 64, 56, 0, Math.PI * 2); x.stroke();
+    x.fillStyle = '#ffb74d'; x.beginPath(); x.arc(64, 64, 30, 0, Math.PI * 2); x.fill();
+    x.fillStyle = '#3a2000'; x.font = 'bold 44px system-ui'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('!', 64, 67);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+  })();
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: pingTex, depthTest: false, depthWrite: false, transparent: true }));
+  s.renderOrder = 11; s.visible = false;
+  return s;
+}
+
 function nameSprite(text, color) {
   const c = document.createElement('canvas'); c.width = 256; c.height = 64;
   const x = c.getContext('2d');
@@ -98,7 +168,7 @@ function nameSprite(text, color) {
   x.lineWidth = 6; x.strokeStyle = 'rgba(0,0,0,.85)'; x.strokeText(text, 128, 32);
   x.fillStyle = color; x.fillText(text, 128, 32);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, transparent: true }));
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false, depthWrite: false, transparent: true }));
   s.scale.set(0.8, 0.2, 1); s.renderOrder = 10;
   return s;
 }
@@ -118,7 +188,7 @@ export function createView3D(canvas) {
 
   function build(G) {
     if (fx) { fx.dispose(); fx = null; }
-    resetClay();
+    resetClay(); pingTex = null; // (shared textures were freed with the old scene)
     if (scene) scene.traverse(o => { // free the previous game's scene
       if (o.geometry) o.geometry.dispose();
       for (const m of [].concat(o.material || [])) { if (m.map) m.map.dispose(); m.dispose(); }
@@ -130,10 +200,12 @@ export function createView3D(canvas) {
     scene.add(new THREE.AmbientLight('#8a86b8', 0.22));
 
     // the apartment has its own look (rooms, furniture, doors, real stairs); otherwise the default building
-    let apt = null, forest = null;
+    let apt = null, forest = null, mall = null, library = null;
     if (G.map === 'apartment') apt = buildApartment(scene, G, WALL_H);
     else if (G.map === 'forest') forest = buildForest(scene, G, WALL_H);
     else if (G.map === 'office') buildOffice(scene, G, WALL_H);
+    else if (G.map === 'mall') mall = buildMall(scene, G, WALL_H);
+    else if (G.map === 'library') library = buildLibrary(scene, G, WALL_H);
     else {
       // floor, ceiling and walls
       const floorTex = canvasTex(128, (x, n) => {
@@ -213,11 +285,17 @@ export function createView3D(canvas) {
       players.set(id, { model, tag, tagFz, ...bits, rp: 0 });
     }
 
-    S = { G, apt, forest, players, spot, near };
+    // noise traps, and a few alert markers to reuse for the noises you hear
+    const SH = G.library ? G.library.storyH : WALL_H; // how high one floor is
+    const traps = (G.traps || []).map(t => { const m = makeTrap(t); m.position.set(t.x + 0.5, (t.fl || 0) * SH, t.y + 0.5); m.userData.base = m.rotation.y; scene.add(m); return { t, m }; });
+    const pings = [];
+    for (let i = 0; i < 6; i++) { const p = pingSprite(); scene.add(p); pings.push(p); }
 
-    // the office is all clay (the people already are): a softer color grade,
+    S = { G, apt, forest, mall, library, players, spot, near, traps, pings, SH };
+
+    // the office and the mall are all clay (the people already are): a softer color grade,
     // and (on computers) soft shadows wherever things touch. It also needs a longer view, to see outside.
-    const clayMap = G.map === 'office';
+    const clayMap = G.map === 'office' || G.map === 'mall' || G.map === 'library';
     if (clayMap) clayifyScene(scene);
     renderer.toneMapping = clayMap ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
     renderer.toneMappingExposure = 0.95;
@@ -237,9 +315,9 @@ export function createView3D(canvas) {
 
     // headlight from the viewer's lamp; it tilts with your look in first person
     const viewModel = S.players.get(view.id), eye = viewModel ? viewModel.model.userData.eye : EYE;
-    const vh = (f.viewH || 0) * WALL_H; // how far up (or down) a staircase the viewer is
+    const vh = (f.viewH || 0) * S.SH + (f.viewJump || 0); // how far up (or down) a staircase, or a jump, the viewer is
     const lamp = new THREE.Vector3(vx + dir.x * 0.22, eye + 0.06 + vh, vz + dir.z * 0.22);
-    S.spot.position.copy(lamp); S.near.position.set(vx, Math.min(WALL_H - 0.1, Math.max(1.0, eye + 0.35)) + vh, vz); // just above the head
+    S.spot.position.copy(lamp); S.near.position.set(vx, Math.min(S.SH - 0.1, Math.max(1.0, eye + 0.35)) + vh, vz); // just above the head
     S.spot.target.position.set(lamp.x + dir.x * 4, lamp.y + Math.tan(f.mode === 'fps' ? f.pitch : 0) * 4 - 0.25, lamp.z + dir.z * 4);
     const lampK = G.bright ? 0.12 : 1; // with the lights on, your headlight barely adds anything
     S.spot.intensity = 9 * f.flicker * lampK; S.near.intensity = 1.6 * (0.5 + 0.5 * f.flicker) * lampK;
@@ -265,7 +343,7 @@ export function createView3D(canvas) {
       o.model.visible = sameFloor && p.show && !firstPersonBody && !(p.imm && Math.floor(t * 10) % 2);
       const showTag = sameFloor && id !== view.id && (p.show || p.mark);
       o.tag.visible = showTag && !p.fz; o.tagFz.visible = showTag && p.fz;
-      const px = p.x / TILE, py = (p.h || 0) * WALL_H, pz = p.y / TILE;
+      const px = p.x / TILE, py = (p.h || 0) * S.SH + (p.jump || 0), pz = p.y / TILE;
       o.model.position.set(px, py, pz); o.model.rotation.y = -p.a;
       o.tag.position.set(px, py + 1.32, pz); o.tagFz.position.copy(o.tag.position);
       // fade your own person when a wall pushes the third-person camera right up behind them
@@ -289,8 +367,20 @@ export function createView3D(canvas) {
       } else o.rescue.visible = false;
     }
 
+    // traps that just went off jiggle; the noises you heard light up where they came from
+    for (const { t: tr, m } of S.traps) m.rotation.y = m.userData.base + (tr.hot ? Math.sin(t * 40) * 0.15 : 0);
+    S.pings.forEach((p, i) => {
+      const n = f.noises && f.noises[i];
+      p.visible = !!n;
+      if (!n) return;
+      const k = n.t / Sh.C.NOISE_SHOW;
+      p.position.set(n.x / TILE, 0.7 + (n.fl || 0) * S.SH, n.y / TILE); p.scale.setScalar(0.5 + 0.25 * Math.sin(t * 10)); p.material.opacity = k;
+    });
+
     if (S.apt) updateApartment(S.apt, f, t);
     if (S.forest) updateForest(S.forest, f, t, camera);
+    if (S.mall) updateMall(S.mall, t);
+    if (S.library) updateLibrary(S.library, t);
     if (fx) fx.render(); else renderer.render(scene, camera);
   }
 
