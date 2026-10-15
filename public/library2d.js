@@ -1,6 +1,7 @@
 // Top-down look of the library, one picture per floor: wooden and marble floors, carpeted stacks of bookcases,
 // reading tables with green lamps, the staircases, and upstairs the gallery railing around the open atrium
 // (the holes in the upper floor are left see-through, so the ground floor shows through them).
+import { drawDefined } from './outline2d.js';
 const Sh = window.Shared;
 const { TILE, COLS, ROWS } = Sh.C;
 
@@ -258,7 +259,7 @@ export function drawLibraryMap(m, G, fl) {
   // the staircases
   for (const r of G.ramps) drawRamp(m, r, !!fl);
   // furniture
-  for (const it of Lb.items) if (it.fl === fl) drawItem(m, it);
+  drawDefined(m, l => { for (const it of Lb.items) if (it.fl === fl) drawItem(l, it); });
   // upstairs: a wooden railing (with a brass top rail) wherever the floor stops at a hole or a staircase's side
   if (fl) {
     const open = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS && grid[y][x] === 4;

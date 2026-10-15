@@ -40,12 +40,18 @@
   .seg button { flex: 1; min-width: 110px; padding: 9px 10px; }
   .seg button.on { background: #3a2a7a; border-color: #7c4dff; color: #fff; font-weight: 700; }
   #c.mode3d { cursor: crosshair; }
+  #exploreExit { position: fixed; left: 12px; top: 48px; z-index: 5; padding: 6px 12px; font-size: 13px; background: rgba(10,10,20,.88); border-color: #2c2a40; }
+  #actBtn { position: fixed; right: 18px; bottom: 104px; z-index: 5; width: 92px; height: 92px; border-radius: 50%; padding: 0; font-size: 13px; font-weight: 800; letter-spacing: .5px; background: rgba(30,90,60,.55); border: 2px solid rgba(105,240,174,.6); color: #fff; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #actBtn.it { background: rgba(110,30,30,.55); border-color: rgba(255,82,82,.6); }
+  #actBtn.ready { background: rgba(255,214,79,.85); border-color: #fff; color: #1a1400; }
   .seg.chars canvas { position: static; display: block; margin: 0 auto 4px; width: 96px; height: 84px; }
 </style>
 </head>
 <body>
 <canvas id="gl"></canvas>
 <canvas id="c"></canvas>
+<button id="exploreExit" hidden>← Lobby</button>
+<button id="actBtn" hidden>TAG</button>
 <div id="overlay"><div class="panel" id="panel"></div></div>
 <script type="importmap">{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three-addons/" } }</script>
 <script src="shared.js"></script>

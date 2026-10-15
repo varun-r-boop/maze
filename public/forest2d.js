@@ -1,5 +1,6 @@
 // Top-down look of the forest map: grass, dirt paths, the pond and bridge, trees, undergrowth, the cabin and
 // the campfire. The campfire glow and fireflies are drawn every frame on top of the darkness.
+import { drawDefined } from './outline2d.js';
 const Sh = window.Shared;
 const { TILE, COLS, ROWS } = Sh.C;
 
@@ -38,7 +39,6 @@ export function drawForestMap(m, G) {
     m.fillStyle = '#4a3a2a'; m.fillRect((c.x0 + 1) * TILE, (c.y0 + 1) * TILE, (c.x1 - c.x0 - 1) * TILE, (c.y1 - c.y0 - 1) * TILE);
     m.strokeStyle = 'rgba(0,0,0,.35)';
     for (let y = c.y0 + 1; y < c.y1; y++) for (let i = 0; i < 4; i++) { m.beginPath(); m.moveTo((c.x0 + 1) * TILE, y * TILE + i * 10 + 0.5); m.lineTo(c.x1 * TILE, y * TILE + i * 10 + 0.5); m.stroke(); }
-    m.fillStyle = '#5a3d25'; m.fillRect(c.table.x * TILE + 6, c.table.y * TILE + 8, TILE - 12, TILE - 16); // table
   }
   for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
     if (G.grid[y][x] !== 1) continue;
@@ -59,43 +59,56 @@ export function drawForestMap(m, G) {
     m.strokeStyle = 'rgba(70,130,60,.7)'; m.lineWidth = 2;
     for (let i = 0; i < 5; i++) { const a = i * 1.25 + hash(x, y); m.beginPath(); m.moveTo(fx, fy); m.lineTo(fx + Math.cos(a) * 9, fy + Math.sin(a) * 9); m.stroke(); }
   }
-  for (const r of F.rocks) {
-    const cx = (r.x + 0.5) * TILE, cy = (r.y + 0.5) * TILE;
-    m.fillStyle = '#5c6066'; m.beginPath(); m.ellipse(cx, cy, 14 * r.s, 11 * r.s, r.rot, 0, Math.PI * 2); m.fill();
-    m.fillStyle = 'rgba(255,255,255,.12)'; m.beginPath(); m.ellipse(cx - 3, cy - 3, 7 * r.s, 5 * r.s, r.rot, 0, Math.PI * 2); m.fill();
-  }
-  for (const l of F.logs) {
-    m.save(); m.translate((l.x + 0.5) * TILE, (l.y + 0.5) * TILE); m.rotate(l.rot);
-    m.fillStyle = '#5a3d25'; m.fillRect(-18, -6, 36, 12); m.fillStyle = '#8a6a48'; m.beginPath(); m.ellipse(18, 0, 3, 6, 0, 0, Math.PI * 2); m.fill();
-    m.restore();
-  }
-  for (const b of F.bushes) {
-    const cx = (b.x + 0.5) * TILE, cy = (b.y + 0.5) * TILE;
-    for (let i = 0; i < 4; i++) { m.fillStyle = i % 2 ? '#2e5a2a' : '#356632'; m.beginPath(); m.arc(cx + Math.cos(i * 1.6) * 7 * b.s, cy + Math.sin(i * 1.6) * 7 * b.s, 10 * b.s, 0, Math.PI * 2); m.fill(); }
-  }
-  // campfire: a ring of stones around the logs (the flames are drawn every frame)
-  const fx = (F.fire.x + 0.5) * TILE, fy = (F.fire.y + 0.5) * TILE;
-  for (let i = 0; i < 9; i++) { m.fillStyle = '#6a6a6a'; m.beginPath(); m.arc(fx + Math.cos(i * 0.7) * 15, fy + Math.sin(i * 0.7) * 15, 5, 0, Math.PI * 2); m.fill(); }
-  m.fillStyle = '#3a2716'; m.save(); m.translate(fx, fy); for (const a of [0.4, -0.4]) { m.save(); m.rotate(a); m.fillRect(-12, -3, 24, 6); m.restore(); } m.restore();
-  // trees last, so their crowns spread over the ground around them
-  for (const t of F.trees) {
-    const cx = (t.x + 0.5 + t.ox) * TILE, cy = (t.y + 0.5 + t.oz) * TILE, s = t.s;
-    m.fillStyle = 'rgba(0,0,0,.35)'; m.beginPath(); m.ellipse(cx + 6, cy + 8, 22 * s, 16 * s, 0, 0, Math.PI * 2); m.fill();
-    if (t.kind === 'pine') {
-      for (let i = 0; i < 3; i++) {
-        m.fillStyle = ['#183a22', '#1f4a2a', '#275a32'][i]; m.beginPath();
-        const r = (24 - i * 7) * s;
-        for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2 + t.rot, rr = k % 2 ? r * 0.7 : r; m.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr); }
-        m.closePath(); m.fill();
-      }
-    } else if (t.kind === 'oak') {
-      for (let i = 0; i < 5; i++) { m.fillStyle = ['#2a4a22', '#335a28', '#2e5226', '#3a6a2e', '#2a4a22'][i]; m.beginPath(); m.arc(cx + Math.cos(i * 1.3 + t.rot) * 10 * s, cy + Math.sin(i * 1.3 + t.rot) * 10 * s, 15 * s, 0, Math.PI * 2); m.fill(); }
-    } else { // dead tree: bare branches
-      m.strokeStyle = '#4a3a2c'; m.lineCap = 'round';
-      for (let i = 0; i < 5; i++) { const a = i * 1.26 + t.rot; m.lineWidth = 4; m.beginPath(); m.moveTo(cx, cy); m.lineTo(cx + Math.cos(a) * 20 * s, cy + Math.sin(a) * 20 * s); m.stroke(); }
-      m.fillStyle = '#4a3a2c'; m.beginPath(); m.arc(cx, cy, 7, 0, Math.PI * 2); m.fill();
+  // everything solid on the ground, drawn on its own layer so it gets an outline and a shadow
+  drawDefined(m, l => {
+    if (F.cabin) { l.fillStyle = '#5a3d25'; l.fillRect(F.cabin.table.x * TILE + 6, F.cabin.table.y * TILE + 8, TILE - 12, TILE - 16); } // table
+    for (const r of F.rocks) {
+      const cx = (r.x + 0.5) * TILE, cy = (r.y + 0.5) * TILE;
+      l.fillStyle = '#3e4146'; l.beginPath(); l.ellipse(cx + 1, cy + 2, 14 * r.s, 11 * r.s, r.rot, 0, Math.PI * 2); l.fill(); // shaded underside
+      l.fillStyle = '#5c6066'; l.beginPath(); l.ellipse(cx, cy, 14 * r.s, 11 * r.s, r.rot, 0, Math.PI * 2); l.fill();
+      l.fillStyle = 'rgba(255,255,255,.12)'; l.beginPath(); l.ellipse(cx - 3, cy - 3, 7 * r.s, 5 * r.s, r.rot, 0, Math.PI * 2); l.fill();
     }
-  }
+    for (const g of F.logs) {
+      l.save(); l.translate((g.x + 0.5) * TILE, (g.y + 0.5) * TILE); l.rotate(g.rot);
+      l.fillStyle = '#5a3d25'; l.fillRect(-18, -6, 36, 12);
+      l.strokeStyle = 'rgba(0,0,0,.35)'; l.lineWidth = 1; l.beginPath(); l.moveTo(-16, -2.5); l.lineTo(14, -2.5); l.moveTo(-14, 2.5); l.lineTo(16, 2.5); l.stroke(); // bark
+      l.fillStyle = '#8a6a48'; l.beginPath(); l.ellipse(18, 0, 3, 6, 0, 0, Math.PI * 2); l.fill();
+      l.strokeStyle = '#5a3d25'; l.beginPath(); l.ellipse(18, 0, 1.5, 3, 0, 0, Math.PI * 2); l.stroke(); // rings
+      l.restore();
+    }
+    for (const b of F.bushes) {
+      const cx = (b.x + 0.5) * TILE, cy = (b.y + 0.5) * TILE;
+      for (let i = 0; i < 4; i++) { l.fillStyle = i % 2 ? '#2e5a2a' : '#356632'; l.strokeStyle = 'rgba(0,0,0,.4)'; l.lineWidth = 1; l.beginPath(); l.arc(cx + Math.cos(i * 1.6) * 7 * b.s, cy + Math.sin(i * 1.6) * 7 * b.s, 10 * b.s, 0, Math.PI * 2); l.stroke(); l.fill(); }
+    }
+    // campfire: a ring of stones around the logs (the flames are drawn every frame)
+    const fx = (F.fire.x + 0.5) * TILE, fy = (F.fire.y + 0.5) * TILE;
+    for (let i = 0; i < 9; i++) { l.fillStyle = '#6a6a6a'; l.beginPath(); l.arc(fx + Math.cos(i * 0.7) * 15, fy + Math.sin(i * 0.7) * 15, 5, 0, Math.PI * 2); l.fill(); }
+    l.fillStyle = '#3a2716'; l.save(); l.translate(fx, fy); for (const a of [0.4, -0.4]) { l.save(); l.rotate(a); l.fillRect(-12, -3, 24, 6); l.restore(); } l.restore();
+    // trees last, so their crowns spread over the ground around them
+    for (const t of F.trees) {
+      const cx = (t.x + 0.5 + t.ox) * TILE, cy = (t.y + 0.5 + t.oz) * TILE, s = t.s;
+      // each crown gets a dark rim of its own, so trees that overlap still read as separate trees
+      l.strokeStyle = '#060d07'; l.lineWidth = 2; l.lineJoin = 'round';
+      if (t.kind === 'pine') {
+        for (let i = 0; i < 3; i++) {
+          l.fillStyle = ['#183a22', '#1f4a2a', '#275a32'][i]; l.beginPath();
+          const r = (24 - i * 7) * s;
+          for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2 + t.rot, rr = k % 2 ? r * 0.7 : r; l.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr); }
+          l.closePath(); if (i === 0) l.stroke(); else { l.strokeStyle = 'rgba(0,0,0,.35)'; l.lineWidth = 1; l.stroke(); } l.fill();
+        }
+        l.fillStyle = '#3a2716'; l.beginPath(); l.arc(cx, cy, 2.5 * s, 0, Math.PI * 2); l.fill(); // the tip
+      } else if (t.kind === 'oak') {
+        const lobes = [0, 1, 2, 3, 4].map(i => [cx + Math.cos(i * 1.3 + t.rot) * 10 * s, cy + Math.sin(i * 1.3 + t.rot) * 10 * s]);
+        for (const [x, y] of lobes) { l.beginPath(); l.arc(x, y, 15 * s, 0, Math.PI * 2); l.stroke(); }
+        lobes.forEach(([x, y], i) => { l.fillStyle = ['#2a4a22', '#335a28', '#2e5226', '#3a6a2e', '#2a4a22'][i]; l.beginPath(); l.arc(x, y, 15 * s, 0, Math.PI * 2); l.fill(); });
+        for (const [x, y] of lobes) { l.fillStyle = 'rgba(160,210,120,.12)'; l.beginPath(); l.arc(x - 4 * s, y - 4 * s, 7 * s, 0, Math.PI * 2); l.fill(); } // leaves catching the light
+      } else { // dead tree: bare branches
+        l.strokeStyle = '#4a3a2c'; l.lineCap = 'round';
+        for (let i = 0; i < 5; i++) { const a = i * 1.26 + t.rot; l.lineWidth = 4; l.beginPath(); l.moveTo(cx, cy); l.lineTo(cx + Math.cos(a) * 20 * s, cy + Math.sin(a) * 20 * s); l.stroke(); }
+        l.fillStyle = '#4a3a2c'; l.beginPath(); l.arc(cx, cy, 7, 0, Math.PI * 2); l.fill();
+      }
+    }
+  }, { rim: 'rgba(200,230,170,.18)', shadow: 'rgba(0,0,0,.6)', drop: 5, blur: 5 });
 }
 
 // drawn over the darkness: the campfire's glow and flames, and fireflies
