@@ -171,6 +171,7 @@ function renderHome() {
       <li><b>Top-down, PC:</b> move with WASD or the arrow keys; your headlight points the way you walk. <b>Phone:</b> drag anywhere to move.</li>
       <li><b>First / third person, PC:</b> click the game to look around with the mouse (Esc frees it). W/S walk, A/D step sideways, ←/→ or Q/E turn. <b>Phone:</b> drag up/down to walk, left/right to turn.</li>
       <li><b>Hide clay</b> (a second game mode): everyone sculpts something out of clay, then hides it somewhere on the map. Then everyone is given someone else's sculpture to find. Find it fast for points; your own sculpture earns points for every second it stays hidden. <b>F</b> (or a left-click) hides your sculpture and picks up the one you're hunting.</li>
+      <li><b>Key escape</b> (a third mode, also on your own): everyone has their own gold <b>key</b> hidden somewhere; it only shows up in your light. Find it and take it to the <b>EXIT gate</b> (the square on your minimap) to unlock your lock. The gate only opens once <b>everyone</b> has unlocked theirs; then walk through to escape. A <b style="color:#ff5252">bot</b> hunts you (more with lots of players), and if it catches you you're frozen until a friend unfreezes you. It can't get you in the green <b style="color:#69f0ae">safe box</b>, but the box moves every ${Sh.C.ZONE_TIME} seconds.</li>
       <li>Press <b>Space</b> to jump (or double-tap on a phone). Jump over a noise trap and it stays quiet.</li>
       <li>Press <b>V</b> during a game to switch views, and <b>M</b> to turn the music on or off.</li>
     </ul></details>`;
@@ -207,8 +208,9 @@ function renderLobby() {
     </div>
     <h3>Players (${room.players.length}/${MAX_PLAYERS})</h3>
     <ul class="plist">${room.players.map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}<em>${(CHARS.find(c => c[0] === p.char) || CHARS[0])[1]}</em>${p.id === room.host ? '<em>host</em>' : ''}${p.id === myId ? '<em>you</em>' : ''}</li>`).join('')}</ul>
-    ${isHost ? (solo ? `<button class="go" id="start">Explore the map</button><p class="note">You're on your own, so there's no tagger and no clock: just walk around the map. You need at least ${MIN_PLAYERS} players to play, so send your friends the invite link.</p>`
-             : `<button class="go" id="start" ${enough ? '' : 'disabled'}>Start round</button><p class="note">${!enough ? `You need at least ${MIN_PLAYERS} players. Send your friends the invite link.` : room.mode === 'clay' ? `Everyone sculpts something out of clay (${Sh.C.SCULPT_TIME / 60} min), hides it (${Sh.C.HIDE_TIME}s), then hunts for someone else's.` : `${taggers} random player${taggers > 1 ? 's' : ''} will be IT; the other ${room.players.length - taggers} will run.`}</p>`)
+    ${isHost ? (solo && room.mode === 'escape' ? `<button class="go" id="start">Start (you vs the bot)</button><p class="note">Find your key, unlock the gate and get out before the bot catches you. Hide in the green safe box; it moves every ${Sh.C.ZONE_TIME}s.</p>`
+             : solo ? `<button class="go" id="start">Explore the map</button><p class="note">You're on your own, so there's no tagger and no clock: just walk around the map. You need at least ${MIN_PLAYERS} players to play, so send your friends the invite link.</p>`
+             : `<button class="go" id="start" ${enough ? '' : 'disabled'}>Start round</button><p class="note">${!enough ? `You need at least ${MIN_PLAYERS} players. Send your friends the invite link.` : room.mode === 'escape' ? `Everyone searches for their own key and unlocks their lock on the gate; it opens once all the locks are open. ${Sh.botCount(room.players.length)} bot${Sh.botCount(room.players.length) > 1 ? 's' : ''} will hunt you; the safe box moves every ${Sh.C.ZONE_TIME}s.` : room.mode === 'clay' ? `Everyone sculpts something out of clay (${Sh.C.SCULPT_TIME / 60} min), hides it (${Sh.C.HIDE_TIME}s), then hunts for someone else's.` : `${taggers} random player${taggers > 1 ? 's' : ''} will be IT; the other ${room.players.length - taggers} will run.`}</p>`)
              : `<p class="sub">Waiting for the host to start…</p>`}
     ${musicButton()}`;
   panel.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(b));
@@ -228,6 +230,7 @@ function copy(btn) {
 
 function renderEnd() {
   if (G.result.mode === 'clay') return renderClayEnd();
+  if (G.result.mode === 'escape') return renderEscapeEnd();
   const r = G.result, isHost = room.host === myId, meP = G.players.get(myId);
   const m = Math.floor(r.time / 60), s = Math.floor(r.time % 60);
   const iWon = meP && meP.role === r.winner;
@@ -239,6 +242,26 @@ function renderEnd() {
       <em style="color:${p.role === 'it' ? '#ff8a80' : '#9be7c4'}">${p.role === 'it' ? 'IT' : 'runner'}</em>
       <em>${p.role === 'it' ? `froze ${p.tags}` : `unfroze ${p.saves} · frozen ${p.timesFrozen}×${p.frozen ? ' · ended frozen' : ''}`}</em></li>`).join('')}</ul>
     ${isHost ? `<div class="row"><button class="go" id="again">Play again (new taggers)</button><button id="lobby">Back to lobby</button></div>`
+             : `<p class="sub">Waiting for the host…</p>`}`;
+  if (isHost) {
+    document.getElementById('again').onclick = () => send({ t: 'start' });
+    document.getElementById('lobby').onclick = () => send({ t: 'lobby' });
+  }
+}
+
+// key escape: who got out (and when), who the bot caught
+function renderEscapeEnd() {
+  const r = G.result, isHost = room.host === myId, me = r.stats.find(p => p.id === myId);
+  const mmss = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  const title = r.winner === 'bot' ? 'THE BOT WINS' : me && me.escaped ? 'YOU ESCAPED' : 'SOME GOT OUT';
+  overlay.classList.remove('hidden');
+  panel.innerHTML = `
+    <p class="result" style="color:${r.winner === 'bot' ? '#ff5252' : '#69f0ae'}">${title}</p>
+    <p class="sub">${esc(r.reason)} · ${mmss(r.time)}</p>
+    <ul class="plist">${[...r.stats].sort((a, b) => (b.escaped - a.escaped) || (a.escapedAt - b.escapedAt)).map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}
+      <em style="color:${p.escaped ? '#9be7c4' : '#ff8a80'}">${p.escaped ? `escaped at ${mmss(p.escapedAt)}` : p.frozen ? 'caught' : 'still inside'}</em>
+      <em>${p.hasKey ? 'found their key' : 'no key'} · unfroze ${p.saves} · caught ${p.timesFrozen}×</em></li>`).join('')}</ul>
+    ${isHost ? `<div class="row"><button class="go" id="again">Play again</button><button id="lobby">Back to lobby</button></div>`
              : `<p class="sub">Waiting for the host…</p>`}`;
   if (isHost) {
     document.getElementById('again').onclick = () => send({ t: 'start' });
@@ -269,6 +292,8 @@ function initGame(m) {
     msgs: [], lastSent: 0, sentX: null, sentY: null, sentA: null, result: null, walk: 0, moving: false, flicker: 1, flip: 1,
   };
   G.traps = (m.traps || []).map(t => ({ ...t, hot: false })); G.noises = [];
+  G.esc = G.mode === 'escape' ? { gate: m.gate, key: m.key, bots: [], zone: null, zl: 0, signal: 0 } : null; // key escape: the gate, your key, the bots, the safe zone
+  if (G.esc && m.key) { const kt = Sh.tileOf(m.key); G.esc.keyDist = Sh.reach(G, kt.x, kt.y, m.key.fl || 0); } // walking distance to your key from everywhere, for the key signal
   for (const p of m.players)
     G.players.set(p.id, { ...p, fl: p.fl || 0, rx: p.x, ry: p.y, tx: p.x, ty: p.y, ta: m.yaw ?? Sh.START_YAW, ra: m.yaw ?? Sh.START_YAW, fz: false, imm: false, tags: 0, walk: 0, flip: 1, jc: 0, jumpT: -1 });
   aim = m.yaw ?? Sh.START_YAW; pitch = 0;
@@ -291,10 +316,16 @@ function applySnapshot(s) {
     const p = G.players.get(sp.id);
     if (!p) continue;
     seen.add(sp.id);
-    Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, tags: sp.tags, fl: sp.f || 0, sc: sp.sc || 0 });
+    Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, tags: sp.tags, fl: sp.f || 0, sc: sp.sc || 0, k: !!sp.k, u: !!sp.u, e: !!sp.e });
     if (sp.j > p.jc) { p.jc = sp.j; if (sp.id !== myId) p.jumpT = 0; } // they jumped
   }
   for (const id of [...G.players.keys()]) if (!seen.has(id)) G.players.delete(id); // someone left
+  if (G.esc && s.bots) {
+    const E = G.esc;
+    s.bots.forEach((b, i) => Object.assign(E.bots[i] || (E.bots[i] = { rx: b.x, ry: b.y, ra: b.a, walk: 0, flip: 1 }), { tx: b.x, ty: b.y, ta: b.a, fl: b.f || 0 }));
+    E.bots.length = s.bots.length;
+    E.zone = s.zone; E.zl = s.zl; E.open = !!s.go;
+  }
   G.n = G.players.size;
 }
 const isTeammate = p => G.mode !== 'clay' && p.role === G.role; // (in hide clay it's everyone for themselves)
@@ -499,6 +530,16 @@ function update(dt) {
     const c = Math.cos(p.ta); if (Math.abs(c) > 0.3) p.flip = c < 0 ? -1 : 1; // walking straight up/down keeps their last side
     p.walk = moving ? p.walk + dt * 12 : 0;
   }
+  if (G.esc) {
+    G.esc.zl = Math.max(0, G.esc.zl - dt);
+    for (const b of G.esc.bots) {
+      const d = Math.hypot(b.tx - b.rx, b.ty - b.ry);
+      if (d > TILE * 2) { b.rx = b.tx; b.ry = b.ty; } // (it took the stairs)
+      b.rx += (b.tx - b.rx) * k; b.ry += (b.ty - b.ry) * k; b.ra = lerpAngle(b.ra, b.ta, k);
+      const c = Math.cos(b.ta); if (Math.abs(c) > 0.3) b.flip = c < 0 ? -1 : 1;
+      b.walk = d > 0.8 ? b.walk + dt * 12 : 0;
+    }
+  }
   G.fade = Math.max(0, G.fade - dt * 2.2);
   if (G.mode === 'clay') clayUpdate(dt);
   // jumps in progress (yours, and other people's)
@@ -533,7 +574,7 @@ function update(dt) {
   }
   if (ui !== 'play' || !meP) return;
   // frozen runners can't move (but can still turn and look around), and taggers wait out the head start
-  const stuck = meP.fz || (G.role === 'it' && G.time < G.hold) || G.phase === 'sculpt';
+  const stuck = meP.fz || meP.e || (G.role === 'it' && G.time < G.hold) || G.phase === 'sculpt';
   let mx, my;
   if (viewMode === 'top') {
     [mx, my] = inputVector();
@@ -911,6 +952,85 @@ function drawNoisePing(n, time) {
   ctx.restore();
 }
 
+// ---------------------------------------------------------------- key escape sprites
+const onMyFloor = o => !G.upper || (o.fl || 0) === G.fl; // (in the library: only what's on your floor)
+// (the safe zone is a square box, `r` from its middle to each side)
+const inSafeZone = pos => { const z = G.esc && G.esc.zone; return !!z && sameFloorAs({ ...pos, fl: pos.fl ?? G.fl }, z) && Math.abs(pos.x - z.x) <= z.r && Math.abs(pos.y - z.y) <= z.r; };
+// the gate: 'open' once everyone has unlocked their lock, 'mine' once you've unlocked yours (waiting for the others),
+// 'key' while you carry your key there, 'locked' before that; and how many of the locks are open
+function gateState() {
+  const meP = G.players.get(myId), ps = [...G.players.values()];
+  return { state: G.esc.open ? 'open' : meP.u ? 'mine' : meP.k ? 'key' : 'locked', done: ps.filter(p => p.u).length, total: ps.length };
+}
+const GATE_COLORS = { open: '#69f0ae', mine: '#ffd54f', key: '#ffd54f', locked: '#ff5252' };
+// the bot: a clunky clay robot with a glowing red visor, and a tagger's red ring at its feet
+function drawBot(c, x, y, flip, walk, t) {
+  const s = Math.sin(walk) * 2.5, bob = walk ? Math.abs(Math.cos(walk)) * 1.5 : 0, ink = 'rgba(20,20,30,.6)';
+  c.save(); c.translate(x, y);
+  c.fillStyle = 'rgba(0,0,0,.35)'; c.beginPath(); c.ellipse(0, 15, 12, 4.5, 0, 0, Math.PI * 2); c.fill();
+  c.scale(flip * 1.25, 1.25); c.translate(0, -bob - 2);
+  c.lineCap = 'round'; c.lineJoin = 'round';
+  c.strokeStyle = '#3c4150'; c.lineWidth = 4.5; // legs
+  c.beginPath(); c.moveTo(-3.5, 4); c.lineTo(-4 + s, 12.5); c.moveTo(3.5, 4); c.lineTo(4 - s, 12.5); c.stroke();
+  c.strokeStyle = '#555c6e'; c.lineWidth = 3.5; // arms
+  c.beginPath(); c.moveTo(-8, -7); c.lineTo(-10 - s * 0.5, 3); c.moveTo(8, -7); c.lineTo(10 + s * 0.5, 3); c.stroke();
+  c.fillStyle = clayFill(c, 0, -3, 12, '#6b7285'); c.strokeStyle = ink; c.lineWidth = 1.2; // body, with a light on its chest
+  roundRect(c, -8.5, -10, 17, 15, 4); c.fill(); c.stroke();
+  c.fillStyle = Math.sin(t * 6) > 0 ? '#ff5252' : '#8a2323'; c.beginPath(); c.arc(0, -3, 2, 0, Math.PI * 2); c.fill();
+  c.fillStyle = clayFill(c, 0, -19, 9, '#7d8497'); c.strokeStyle = ink; // head
+  roundRect(c, -8, -27, 16, 13, 4); c.fill(); c.stroke();
+  c.shadowColor = '#ff2a2a'; c.shadowBlur = 10; c.fillStyle = '#ff3b3b'; roundRect(c, -1, -23.5, 9, 4.5, 2); c.fill(); c.shadowBlur = 0; // visor
+  c.strokeStyle = '#3c4150'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(0, -27); c.lineTo(0, -32); c.stroke(); // antenna
+  c.fillStyle = '#ff5252'; c.beginPath(); c.arc(0, -33, 2, 0, Math.PI * 2); c.fill();
+  c.restore();
+  drawTagMarks({ role: 'it' }, x, y, t);
+}
+// your key: gold, glowing, bobbing over the floor
+function drawKey(x, y, t) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(x, y + 10, 9, 3, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.translate(x, y - 6 + Math.sin(t * 3) * 3); ctx.rotate(-0.5);
+  ctx.shadowColor = '#ffd54f'; ctx.shadowBlur = 16; ctx.strokeStyle = ctx.fillStyle = '#ffc93c'; ctx.lineWidth = 3.5;
+  ctx.beginPath(); ctx.arc(-7, 0, 5, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillRect(-2, -1.75, 15, 3.5); ctx.fillRect(9, 1, 2.5, 4.5); ctx.fillRect(4.5, 1, 2.5, 3.5);
+  ctx.restore();
+}
+// the exit gate: bars between two posts, with a padlock: red, yellow once yours is unlocked (it swings open), and
+// green with the bars gone once everyone's is. Under it, how many locks are open.
+function drawGate(x, y, t, { state, done, total }) {
+  const col = GATE_COLORS[state], open = state === 'open';
+  ctx.save(); ctx.translate(x, y);
+  ctx.shadowColor = col; ctx.shadowBlur = 14 + 6 * Math.sin(t * 4);
+  ctx.fillStyle = '#4a4458'; ctx.fillRect(-19, -26, 5, 40); ctx.fillRect(14, -26, 5, 40); ctx.fillRect(-21, -31, 42, 6);
+  ctx.shadowBlur = 0; ctx.strokeStyle = '#8d88a0'; ctx.lineWidth = 2;
+  if (!open) for (let i = -9; i <= 9; i += 6) { ctx.beginPath(); ctx.moveTo(i, -25); ctx.lineTo(i, 13); ctx.stroke(); }
+  else { ctx.fillStyle = `rgba(105,240,174,${0.25 + 0.15 * Math.sin(t * 6)})`; ctx.fillRect(-14, -25, 28, 38); } // the way out
+  ctx.shadowColor = col; ctx.shadowBlur = 10; ctx.fillStyle = ctx.strokeStyle = col;
+  if (!open) {
+    roundRect(ctx, -6, -6, 12, 9, 2); ctx.fill();
+    ctx.lineWidth = 2.2; ctx.beginPath(); ctx.arc(state === 'mine' ? 3 : 0, -6, 3.8, Math.PI, 0); ctx.stroke(); // your shackle swings open
+  }
+  ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff'; ctx.fillText('EXIT', 0, -28);
+  ctx.shadowBlur = 0; ctx.font = 'bold 11px system-ui'; ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.fillStyle = col;
+  const lbl = open ? 'OPEN!' : `🔒 ${done}/${total} unlocked`;
+  ctx.strokeText(lbl, 0, 26); ctx.fillText(lbl, 0, 26);
+  ctx.restore();
+}
+// the safe zone: a green square box on the floor with a countdown; it flashes just before it moves
+function drawZone(z, t, zl) {
+  const blink = zl < 3 && Math.floor(t * 6) % 2, x0 = z.x - z.r, y0 = z.y - z.r, s = z.r * 2;
+  ctx.save();
+  ctx.fillStyle = `rgba(105,240,174,${blink ? 0.04 : 0.12})`; ctx.fillRect(x0, y0, s, s);
+  ctx.setLineDash([10, 8]); ctx.lineDashOffset = -t * 20; ctx.strokeStyle = `rgba(105,240,174,${blink ? 0.3 : 0.85})`; ctx.lineWidth = 3;
+  ctx.strokeRect(x0, y0, s, s); ctx.setLineDash([]);
+  ctx.fillStyle = `rgba(105,240,174,${blink ? 0.3 : 0.9})`; // solid corners, so it reads as a box
+  for (const [cx, cy] of [[x0, y0], [x0 + s, y0], [x0, y0 + s], [x0 + s, y0 + s]]) ctx.fillRect(cx - 4, cy - 4, 8, 8);
+  ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.fillStyle = '#69f0ae';
+  ctx.strokeText(`SAFE · ${Math.ceil(zl)}`, z.x, z.y - z.r - 8); ctx.fillText(`SAFE · ${Math.ceil(zl)}`, z.x, z.y - z.r - 8);
+  ctx.restore();
+}
+
 function nameTag(text, x, y, color) {
   ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(text, x, y);
@@ -935,13 +1055,18 @@ function draw3D(t) {
     const pos = posOf(id, p), self = id === myId;
     players.set(id, {
       ...pos, a: self ? aim : p.ra, walk: self ? G.walk : p.walk, role: p.role, fz: p.fz, imm: p.imm,
-      show: canSee(view, id, p, pos) && !(G.mode === 'clay' && G.phase === 'sculpt'), mark: !self && isTeammate(p), h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * JUMP_3D,
+      show: canSee(view, id, p, pos) && !(G.mode === 'clay' && G.phase === 'sculpt') && !(p.e && !self), mark: !self && isTeammate(p) && !p.e, h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * JUMP_3D,
     });
   }
   v3d.render({
     G, view, t, mode: viewMode, players, noises: G.noises,
     clay: G.mode === 'clay' ? [...G.objs.values()].map(o => ({ ...o, show: o.x != null && (G.phase === 'hunt' || o.id === myId), fill: lumpColor((G.players.get(o.id) || { slot: 0 }).slot) })) : null,
     pitch, flicker: G.flicker, walk: G.walk, viewH: heightAt(view), viewJump: jumpK(G.jumpT) * JUMP_3D,
+    escape: G.esc && {
+      bots: G.esc.bots.map(b => { const pos = { x: b.rx, y: b.ry, fl: b.fl }; return { ...pos, a: b.ra, walk: b.walk, h: heightAt(pos), show: isLit(view, pos) }; }),
+      key: G.esc.key && { ...G.esc.key, show: !G.players.get(myId).k && isLit(view, G.esc.key) },
+      gate: G.esc.gate, gateState: gateState().state, zone: G.esc.zone, zl: G.esc.zl,
+    },
     backRoom: castRay(view.x, view.y, view.a + Math.PI, 2.2 * TILE), // room behind you for the third-person camera
   });
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cvs.width, cvs.height);
@@ -962,12 +1087,14 @@ function drawWorld(t) {
   if (G.doors.length) drawDoors2D(ctx, G);
   for (const tr of G.traps) if ((tr.fl || 0) === G.fl) drawTrap(tr, t);
   if (G.mode === 'clay') for (const o of G.objs.values()) drawClayObj(o, view, t);
+  const meK = G.esc && G.players.get(myId).k;
+  if (G.esc && G.esc.key && !meK && onMyFloor(G.esc.key) && isLit(view, G.esc.key)) drawKey(G.esc.key.x, G.esc.key.y, t); // your key: only in your light
 
   // everyone you can see, sorted by y so characters lower on screen draw in front
   const actors = [];
   for (const [id, p] of G.players) {
     const pos = posOf(id, p), self = id === myId;
-    if (!canSee(view, id, p, pos)) continue;
+    if (!canSee(view, id, p, pos) || (p.e && !self)) continue; // (in key escape, anyone who got out is gone)
     const below = G.upper && Sh.elev(G, pos) < Sh.elev(G, view) - 0.5; // seen down in the atrium from the gallery
     const up = jumpK(self ? G.jumpT : p.jumpT) * JUMP_PX;
     actors.push({ y: pos.y + (below ? -1e5 : 0), draw: () => {
@@ -976,6 +1103,10 @@ function drawWorld(t) {
       drawPerson(ctx, p.char, pos.x, pos.y - up, p.fz ? shade(COLORS[p.slot], 0.75) : COLORS[p.slot], self ? G.flip : p.flip, self ? G.walk : p.walk, (blink ? 0.45 : 1) * (below ? 0.7 : 1), p.slot);
       drawTagMarks(p, pos.x, pos.y - up, t);
     } });
+  }
+  if (G.esc) for (const b of G.esc.bots) { // the bots: only when you can see them
+    const pos = { x: b.rx, y: b.ry, fl: b.fl };
+    if (isLit(view, pos)) actors.push({ y: pos.y, draw: () => drawBot(ctx, pos.x, pos.y, b.flip, b.walk, t) });
   }
   actors.sort((a, b) => a.y - b.y).forEach(a => a.draw());
   const sinceAct = (performance.now() - (G.actAt || -1e9)) / 250;
@@ -1028,10 +1159,15 @@ function drawWorld(t) {
 
   if (G.forest) drawForestGlow(ctx, G, t); // the campfire and fireflies glow through the dark
   for (const n of G.noises) drawNoisePing(n, t);
+  if (G.esc) { // the safe zone and the exit gate glow through the dark, so you can always find them
+    if (G.esc.zone && onMyFloor(G.esc.zone)) drawZone(G.esc.zone, t, G.esc.zl);
+    if (onMyFloor(G.esc.gate)) drawGate(G.esc.gate.x, G.esc.gate.y, t, gateState());
+    for (const b of G.esc.bots) if (isLit(view, { x: b.rx, y: b.ry, fl: b.fl })) nameTag('BOT', b.rx, b.ry - 50, '#ff6b6b');
+  }
   // on top of the dark: names of everyone you can see, and your teammates' markers wherever they are
   for (const [id, p] of G.players) {
     const pos = posOf(id, p), self = id === myId, seen = canSee(view, id, p, pos), mate = !self && isTeammate(p);
-    if (!seen && !mate) continue;
+    if ((!seen && !mate) || (p.e && !self)) continue;
     const col = p.role === 'it' ? '#ff6b6b' : self ? '#fff' : COLORS[p.slot];
     if (mate && !seen) { // a teammate out of sight: a ring (icy blue if they're frozen) where they are
       ctx.strokeStyle = p.fz ? '#7fd4ff' : COLORS[p.slot]; ctx.globalAlpha = 0.7; ctx.lineWidth = p.fz ? 3 : 2;
@@ -1061,7 +1197,7 @@ function drawMinimap(x, y) {
   ctx.save(); ctx.translate(x, y);
   ctx.globalAlpha = 0.85; ctx.drawImage(miniUp && G.fl ? miniUp : miniCanvas, 0, 0); ctx.globalAlpha = 1;
   for (const [id, p] of G.players) { // your teammates (frozen ones as an icy ring; fainter if they're on the other floor)
-    if (id === myId || !isTeammate(p)) continue;
+    if (id === myId || !isTeammate(p) || p.e) continue;
     const px = p.rx / TILE * MINI, py = p.ry / TILE * MINI;
     ctx.globalAlpha = G.upper && p.fl !== G.fl ? 0.45 : 1;
     if (p.fz) { ctx.strokeStyle = '#7fd4ff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, 3.2, 0, Math.PI * 2); ctx.stroke(); }
@@ -1071,6 +1207,15 @@ function drawMinimap(x, y) {
   const mine = G.mode === 'clay' && G.objs.get(myId);
   if (mine && mine.x != null && (mine.fl || 0) === G.fl) { // your sculpture: a little star
     ctx.fillStyle = '#ffe9a8'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★', mine.x / TILE * MINI, mine.y / TILE * MINI);
+  }
+  if (G.esc) { // key escape: the safe zone (green) and the exit gate
+    const z = G.esc.zone, gt = G.esc.gate;
+    if (z) { ctx.globalAlpha = G.upper && z.fl !== G.fl ? 0.4 : 1; ctx.fillStyle = 'rgba(105,240,174,.35)'; ctx.strokeStyle = '#69f0ae'; ctx.lineWidth = 1.2; const zs = z.r / TILE * MINI; ctx.fillRect(z.x / TILE * MINI - zs, z.y / TILE * MINI - zs, zs * 2, zs * 2); ctx.strokeRect(z.x / TILE * MINI - zs, z.y / TILE * MINI - zs, zs * 2, zs * 2); }
+    ctx.globalAlpha = G.upper && gt.fl !== G.fl ? 0.4 : 1;
+    const gx = gt.x / TILE * MINI, gy = gt.y / TILE * MINI, on = Math.floor(performance.now() / 400) % 2;
+    ctx.fillStyle = G.esc.open ? '#69f0ae' : '#ffd54f'; ctx.fillRect(gx - 3.5, gy - 3.5, 7, 7);
+    if (on) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.strokeRect(gx - 5, gy - 5, 10, 10); }
+    ctx.globalAlpha = 1;
   }
   for (const n of G.noises) if (Math.floor(n.t * 6) % 2) { // noises you heard, flashing
     ctx.fillStyle = '#ffb74d'; ctx.beginPath(); ctx.arc(n.x / TILE * MINI, n.y / TILE * MINI, 3.5, 0, Math.PI * 2); ctx.fill();
@@ -1105,6 +1250,7 @@ function drawStatus(meP) {
   let status, col;
   const target = actTarget(), clickWord = isTouch ? 'Tap the button' : 'Click';
   if (G.explore) { status = 'EXPLORING'; col = '#69f0ae'; }
+  else if (G.esc) [status, col] = meP.e ? ['ESCAPED', '#69f0ae'] : meP.fz ? ['CAUGHT', '#7fd4ff'] : inSafeZone(G.me) ? ['SAFE', '#69f0ae'] : G.esc.open ? ['GATE OPEN', '#69f0ae'] : meP.u ? ['UNLOCKED', '#ffd54f'] : meP.k ? ['GOT YOUR KEY', '#ffd54f'] : ['SEARCHING', '#ffe9a8'];
   else if (it) { status = G.time < G.hold ? 'IT · WAIT' : 'IT'; col = '#ff5252'; }
   else if (meP.fz) { status = 'FROZEN'; col = '#7fd4ff'; }
   else if (meP.imm) { status = 'SAFE FOR A MOMENT'; col = '#b388ff'; }
@@ -1113,11 +1259,93 @@ function drawStatus(meP) {
   ctx.font = '13px system-ui'; ctx.fillStyle = '#e8e6f0';
   let hint;
   if (G.explore) hint = isTouch ? 'Walk around and look at the map' : 'Walk around and look at the map · L to leave';
+  else if (G.esc) hint = meP.e ? 'You got out! Watch the others…' : meP.fz ? 'The bot caught you. Wait for a friend to unfreeze you' : target ? `${clickWord} to unfreeze ${target.name}!`
+    : G.esc.open ? 'The gate is open! Get to it and get out' : meP.u ? `Your lock is open. Waiting for everyone (${gateState().done}/${gateState().total})`
+    : meP.k ? 'Take your key to the EXIT gate (the square on the map)' : 'Find your gold key: it shines in your light';
   else if (it) hint = G.time < G.hold ? `Get ready… you can move in ${Math.ceil(G.hold - G.time)}s` : target ? `${clickWord} to freeze ${target.name}!` : `Catch a runner and ${clickWord.toLowerCase()} · frozen so far: ${meP.tags}`;
   else if (meP.fz) hint = 'Wait for a friend to come and unfreeze you';
   else hint = target ? `${clickWord} to unfreeze ${target.name}!` : `Get next to frozen friends and ${clickWord.toLowerCase()} to unfreeze them`;
   if (target) { ctx.font = 'bold 13px system-ui'; ctx.fillStyle = '#ffe680'; } // someone's in reach: say so
   ctx.fillText(hint, x + 14, y + 44);
+}
+
+// someone's in reach of a click: a bouncing arrow and a ring on them (top-down), a pulsing banner (every view),
+// and a ping the moment they come into reach
+function drawReachCue(t) {
+  const target = actTarget(), it = G.role === 'it';
+  if (target !== G.cueTarget) { if (target) reachPing(it); G.cueTarget = target; }
+  if (!target) return;
+  const col = it ? '255,82,82' : '105,240,174', pulse = 0.5 + 0.5 * Math.sin(t * 12);
+  ctx.save();
+  if (viewMode === 'top') {
+    const view = getView(), sx = W / 2 + (target.rx - view.x) * Z, sy = H / 2 + (target.ry - view.y) * Z;
+    ctx.strokeStyle = `rgba(${col},${0.6 + 0.4 * pulse})`; ctx.lineWidth = 3; ctx.shadowColor = `rgb(${col})`; ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.ellipse(sx, sy + 15 * Z, (20 + 4 * pulse) * Z, (8 + 1.5 * pulse) * Z, 0, 0, Math.PI * 2); ctx.stroke();
+    const ay = sy - 58 * Z - 6 * Math.abs(Math.sin(t * 6)); // arrow over their head, bouncing
+    ctx.fillStyle = `rgb(${col})`;
+    ctx.beginPath(); ctx.moveTo(sx, ay + 12); ctx.lineTo(sx - 11, ay - 2); ctx.lineTo(sx - 4, ay - 2); ctx.lineTo(sx - 4, ay - 14);
+    ctx.lineTo(sx + 4, ay - 14); ctx.lineTo(sx + 4, ay - 2); ctx.lineTo(sx + 11, ay - 2); ctx.closePath(); ctx.fill();
+    ctx.shadowBlur = 0; ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.8)';
+    const word = isTouch ? 'TAP!' : 'CLICK!';
+    ctx.strokeText(word, sx, ay - 17); ctx.fillText(word, sx, ay - 17);
+  }
+  const text = `${isTouch ? (it ? 'TAP TAG' : 'TAP UNFREEZE') : 'CLICK / SPACE'} · ${it ? 'freeze' : 'unfreeze'} ${target.name}!`;
+  ctx.font = `bold ${W < 480 ? 14 : 18}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const bw = ctx.measureText(text).width + 36, bh = 38, bx = (W - bw) / 2, by = H * 0.68;
+  ctx.fillStyle = `rgba(10,10,20,${0.75 + 0.15 * pulse})`; roundRect(ctx, bx, by, bw, bh, 10); ctx.fill();
+  ctx.strokeStyle = `rgba(${col},${0.55 + 0.45 * pulse})`; ctx.lineWidth = 2.5; ctx.shadowColor = `rgb(${col})`; ctx.shadowBlur = 10 * pulse; ctx.stroke();
+  ctx.shadowBlur = 0; ctx.fillStyle = `rgb(${col})`; ctx.fillText(text, W / 2, by + bh / 2 + 1);
+  ctx.restore();
+}
+// key escape: the key signal. Five bars, short to tall, light up one by one the closer you walk to your key (by the
+// way you'd have to walk, so walls don't fool it); each new bar beeps a little higher.
+const SIGNAL_STEPS = [22, 15, 10, 6, 3]; // tiles away for 1, 2, 3, 4 and 5 bars
+function keySignal() {
+  const kd = G.esc.keyDist;
+  if (!kd) return 0;
+  const tl = Sh.tileOf(G.me), i = Sh.I(tl.x, tl.y);
+  let d = kd.d[G.fl * kd.N + i];
+  if (d < 0 && kd.grids.length > 1) d = kd.d[(1 - G.fl) * kd.N + i]; // (half way up a staircase)
+  return d < 0 ? 0 : SIGNAL_STEPS.filter(s => d <= s).length;
+}
+function drawKeySignal(meP, t) {
+  if (meP.k || meP.e || meP.fz) { G.esc.signal = 0; return; }
+  const n = keySignal();
+  if (n > G.esc.signal) signalBeep(n);
+  G.esc.signal = n;
+  const x = 12, w = 168, h = 52, y = H - 72 - h - 8;
+  ctx.save();
+  ctx.fillStyle = 'rgba(10,10,20,.8)'; roundRect(ctx, x, y, w, h, 8); ctx.fill();
+  ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#ffe9a8';
+  ctx.fillText('KEY SIGNAL', x + 12, y + 18);
+  ctx.font = '12px system-ui'; ctx.fillStyle = n >= 4 ? '#ffd54f' : '#b9b5d6';
+  ctx.fillText(['No signal', 'Faint', 'Getting closer', 'Close', 'Very close', 'Right here!'][n], x + 12, y + 38);
+  const bx = x + w - 84, base = y + h - 10;
+  for (let i = 0; i < 5; i++) { // bars rising from short to tall
+    const bh = 8 + i * 7, on = i < n, top = on && i === n - 1;
+    ctx.fillStyle = on ? (top ? `rgba(255,213,79,${0.65 + 0.35 * Math.sin(t * (6 + n * 2))})` : '#ffc93c') : 'rgba(255,255,255,.14)';
+    if (on) { ctx.shadowColor = '#ffd54f'; ctx.shadowBlur = 6 + n * 2; } else ctx.shadowBlur = 0;
+    roundRect(ctx, bx + i * 15, base - bh, 10, bh, 2); ctx.fill();
+  }
+  ctx.restore();
+}
+function signalBeep(n) {
+  if (!actx || actx.state !== 'running') return;
+  const now = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+  o.type = 'sine'; o.frequency.value = 440 * Math.pow(1.26, n);
+  g.gain.setValueAtTime(0.0001, now); g.gain.exponentialRampToValueAtTime(0.12, now + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
+  o.connect(g).connect(actx.destination); o.start(now); o.stop(now + 0.17);
+}
+function reachPing(it) {
+  if (!actx || actx.state !== 'running') return;
+  const now = actx.currentTime;
+  [0, 0.08].forEach((dt, i) => {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = 'triangle'; o.frequency.value = (it ? 660 : 880) * (i ? 1.5 : 1);
+    g.gain.setValueAtTime(0.0001, now + dt); g.gain.exponentialRampToValueAtTime(0.18, now + dt + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, now + dt + 0.12);
+    o.connect(g).connect(actx.destination); o.start(now + dt); o.stop(now + dt + 0.14);
+  });
 }
 
 function drawHud(t) {
@@ -1139,6 +1367,8 @@ function drawHud(t) {
   drawMinimap(W - COLS * MINI - 10, 50);
   if (G.mode === 'clay') { actBtn.hidden = true; drawClayHud(meP, t); drawHudFooter(); return; }
   drawStatus(meP);
+  if (G.esc) drawKeySignal(meP, t);
+  drawReachCue(t);
   // phones: the tag / unfreeze button, lit up when someone's in reach
   const showBtn = isTouch && !G.explore && !(meP.fz && G.role !== 'it');
   actBtn.hidden = !showBtn;
@@ -1156,6 +1386,20 @@ function drawHud(t) {
   const cy = 24, cols = [bx + bw * 0.17, bx + bw * 0.5, bx + bw * 0.83];
   if (G.explore) {
     ctx.fillStyle = '#69f0ae'; ctx.fillText(`Exploring · ${Sh.MAPS.find(mp => mp[0] === G.map)?.[1] || G.map}`, bx + bw / 2, cy);
+  } else if (G.esc) {
+    const ps = [...G.players.values()], out = ps.filter(p => p.e).length;
+    ctx.fillStyle = meP.e || G.esc.open ? '#69f0ae' : meP.k ? '#ffd54f' : '#ffe9a8';
+    ctx.fillText(meP.e ? 'ESCAPED' : G.esc.open ? 'GATE OPEN!' : meP.u ? 'LOCK OPEN ✓' : meP.k ? 'KEY ✓ → GATE' : 'FIND YOUR KEY', cols[0], cy);
+    const gs = gateState();
+    ctx.fillStyle = '#c9e9ff'; ctx.fillText(G.esc.open ? `Escaped ${out}/${ps.length}` : `Locks open ${gs.done}/${gs.total}`, cols[1], cy);
+    const left = Math.max(0, G.roundTime - G.time), m = Math.floor(left / 60), s = Math.floor(left % 60);
+    ctx.fillStyle = left < 15 && Math.sin(t * 10) > 0 ? '#ff5252' : '#ffe9a8';
+    ctx.fillText(G.time < G.hold ? `Bot wakes in ${Math.ceil(G.hold - G.time)}` : `${m}:${String(s).padStart(2, '0')} left`, cols[2], cy);
+    // when the safe zone moves next (it flashes for the last 3 seconds)
+    const zt = `Safe zone moves in ${Math.ceil(G.esc.zl)}s`, warn = G.esc.zl < 3;
+    ctx.font = 'bold 12px system-ui'; const zw = ctx.measureText(zt).width + 22;
+    ctx.fillStyle = 'rgba(10,10,20,.8)'; roundRect(ctx, (W - zw) / 2, 44, zw, 20, 6); ctx.fill();
+    ctx.fillStyle = warn && Math.sin(t * 14) > 0 ? '#ffffff' : '#69f0ae'; ctx.fillText(zt, W / 2, 54);
   } else {
   ctx.fillStyle = G.role === 'it' ? '#ff5252' : '#69f0ae'; ctx.fillText(G.role === 'it' ? "YOU'RE IT" : 'RUNNER', cols[0], cy);
   const runners = [...G.players.values()].filter(p => p.role === 'run'), free = runners.filter(p => !p.fz).length;
@@ -1179,7 +1423,7 @@ function drawHudFooter() {
   G.msgs.forEach((mg, i) => {
     ctx.globalAlpha = Math.min(1, mg.t);
     ctx.font = `bold ${W < 480 ? 13 : 16}px system-ui`; ctx.fillStyle = mg.color;
-    ctx.fillText(mg.text, W / 2, 62 + i * 24);
+    ctx.fillText(mg.text, W / 2, (G.esc ? 84 : 62) + i * 24); // (below the safe zone's countdown in key escape)
   });
   ctx.globalAlpha = 1;
 
