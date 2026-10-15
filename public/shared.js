@@ -12,10 +12,28 @@
     HOLD: 5,             // seconds at the start when taggers can't move yet (the runners scatter)
     DANGER_DIST: 7,      // tiles: runners hear the heartbeat when a tagger is this close
     ROUND_TIMES: [60, 120, 180, 300, 480], ROUND_DEFAULT: 180, // seconds the host can pick from
+    // noise traps: noisy things on the floor that give a runner away when they step on one
+    TRAP_STEP: 16,       // px: how close to a trap's center you have to step to set it off
+    TRAP_COOLDOWN: 8,    // seconds before a trap can go off again
+    NOISE_RADIUS: 14,    // tiles: how far away (on the same floor) a noise is heard
+    NOISE_SHOW: 4,       // seconds the alert stays up where the noise came from
+    // jumping (space): a little hop. While you're in the air you don't set off noise traps, so you can jump over them.
+    JUMP_T: 0.55,        // seconds a jump lasts
+    JUMP_REST: 0.2,      // seconds after landing before you can jump again
   };
   const { TILE, COLS, ROWS } = C;
   // how many taggers: 1 for up to 6 players, 2 for 7 to 12
   S.taggerCount = n => n <= 6 ? 1 : 2;
+  // the kinds of noise trap (`sound` picks how it sounds), and which ones lie around on each map
+  S.TRAPS = {
+    glass: { name: 'broken glass', sound: 'crunch' }, cans: { name: 'tin cans', sound: 'clank' }, bubble: { name: 'bubble wrap', sound: 'pop' },
+    toy: { name: 'a squeaky toy', sound: 'squeak' }, twigs: { name: 'dry twigs', sound: 'snap' }, leaves: { name: 'crunchy leaves', sound: 'rustle' },
+    mug: { name: 'a smashed mug', sound: 'crunch' }, books: { name: 'a pile of books', sound: 'thud' },
+  };
+  S.MAP_TRAPS = {
+    building: ['glass', 'cans', 'bubble'], apartment: ['glass', 'cans', 'toy'], forest: ['twigs', 'leaves'],
+    office: ['bubble', 'mug'], mall: ['toy', 'glass', 'bubble', 'cans'], library: ['books', 'bubble', 'mug'],
+  };
   S.COLORS = ['#4fc3f7', '#ffb74d', '#81c784', '#f06292', '#fff176', '#4db6ac', '#ce93d8', '#ff8a65', '#7986cb', '#aed581', '#bcaaa4', '#e0e0e0'];
   // each player's skin tone and hair color come from their slot, so the clay people all look a bit different
   const SKINS = ['#f2c9a8', '#d9a07a', '#b97f55', '#8c5a3c', '#e8b58f', '#6b4430', '#f6d6bf', '#c58c66'];
@@ -34,7 +52,7 @@
   S.dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
   // maps the host can pick
-  S.MAPS = [['building', 'Building'], ['apartment', 'Apartment (3 floors)'], ['forest', 'Forest'], ['office', 'Office (lights on)']];
+  S.MAPS = [['building', 'Building'], ['apartment', 'Apartment (3 floors)'], ['forest', 'Forest'], ['office', 'Office (lights on)'], ['mall', 'Mall (daytime)'], ['library', 'Library (2 floors)']];
 
   // `links` (optional): Map from a tile index to tile indexes it also connects to (stairs between floors)
   S.bfs = function (sx, sy, pass, links) {
@@ -71,6 +89,8 @@
     if (name === 'apartment') return genApartment();
     if (name === 'forest') return genForest();
     if (name === 'office') return genOffice();
+    if (name === 'mall') return genMall();
+    if (name === 'library') return genLibrary();
     return { name: 'building', grid: S.genMap(), floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns: S.SPAWNS };
   };
 
@@ -244,16 +264,31 @@
   // desk area; a second corridor; and the technical room, toilets, a second meeting room, the copy room and the
   // second desk area. The way out is the emergency stairwell door in the bottom wall.
   // Grid values as elsewhere: 0 floor, 1 wall, 2 low (blocks walking, not light: desks, sofas, glass walls), 3 tall.
+  // Helpers for maps laid out by hand (the office and the mall): an empty floor inside the outer wall, walls with
+  // doorways, glass walls with glass doors, furniture (`tall` lists the pieces that also block light), and rooms.
+  function floorPlan(tall) {
+    const g = [...Array(ROWS)].map((_, y) => Array(COLS).fill(0).map((_, x) => (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1) ? 1 : 0));
+    const P = { g, items: [], rooms: [], glass: [], doors: [], windows: [] };
+    P.fill = (x0, y0, x1, y1, v) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) g[y][x] = v; };
+    P.hwall = (y, x0, x1, ...gaps) => { P.fill(x0, y, x1, y, 1); for (const x of gaps) { g[y][x] = 0; P.doors.push({ x, y }); } };
+    P.vwall = (x, y0, y1, ...gaps) => { P.fill(x, y0, x, y1, 1); for (const y of gaps) { g[y][x] = 0; P.doors.push({ x, y }); } };
+    P.glassH = (y, x0, x1, ...gaps) => {
+      for (let x = x0; x <= x1; x++) if (gaps.includes(x)) { g[y][x] = 0; P.doors.push({ x, y, glass: true }); } else { g[y][x] = 2; P.glass.push({ x, y }); }
+    };
+    P.put = (type, x, y, w = 1, h = 1, extra = {}) => { P.fill(x, y, x + w - 1, y + h - 1, tall.has(type) ? 3 : 2); P.items.push({ type, x, y, w, h, ...extra }); };
+    P.room = (type, x0, y0, x1, y1, extra = {}) => P.rooms.push({ type, x0, y0, x1, y1, ...extra });
+    // every floor tile must be reachable from the spawn
+    P.check = (name, spawns) => {
+      const d = S.bfs(spawns[0][0], spawns[0][1], (x, y) => g[y][x] === 0).d;
+      for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++)
+        if (g[y][x] === 0 && d[I(x, y)] < 0) throw new Error(`${name} layout: tile ${x},${y} can't be reached`);
+    };
+    return P;
+  }
+
   const OFFICE_TALL = new Set(['fridge', 'locker', 'shelf', 'rack', 'copier', 'elevator']);
   function genOffice() {
-    const g = [...Array(ROWS)].map((_, y) => Array(COLS).fill(0).map((_, x) => (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1) ? 1 : 0));
-    const items = [], rooms = [], glass = [], doors = [], windows = [];
-    const fill = (x0, y0, x1, y1, v) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) g[y][x] = v; };
-    const hwall = (y, x0, x1, ...gaps) => { fill(x0, y, x1, y, 1); for (const x of gaps) { g[y][x] = 0; doors.push({ x, y }); } };
-    const vwall = (x, y0, y1, ...gaps) => { fill(x, y0, x, y1, 1); for (const y of gaps) { g[y][x] = 0; doors.push({ x, y }); } };
-    const glassH = (y, x0, x1, door) => { for (let x = x0; x <= x1; x++) if (x === door) { g[y][x] = 0; doors.push({ x, y, glass: true }); } else { g[y][x] = 2; glass.push({ x, y }); } };
-    const put = (type, x, y, w = 1, h = 1, extra = {}) => { fill(x, y, x + w - 1, y + h - 1, OFFICE_TALL.has(type) ? 3 : 2); items.push({ type, x, y, w, h, ...extra }); };
-    const room = (type, x0, y0, x1, y1) => rooms.push({ type, x0, y0, x1, y1 });
+    const { g, items, rooms, glass, doors, windows, fill, hwall, vwall, glassH, put, room, check } = floorPlan(OFFICE_TALL);
     const YELLOW = '#f0c419', GREY = '#8a8f99', BLUE = '#2f6fb3';
 
     for (let x = 1; x < COLS - 1; x++) windows.push({ x, y: 0 });
@@ -312,11 +347,249 @@
 
     const spawns = [];
     for (let y = 13; y <= 15; y++) for (let x = 2; x <= 5; x++) spawns.push([x, y]); // the elevator lobby
-    const d = S.bfs(spawns[0][0], spawns[0][1], (x, y) => g[y][x] === 0).d;
-    for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++)
-      if (g[y][x] === 0 && d[I(x, y)] < 0) throw new Error(`office layout: tile ${x},${y} can't be reached`);
+    check('office', spawns);
     return { name: 'office', grid: g, floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns, yaw: 0, bright: true,
       office: { items, rooms, glass, doors, windows } };
+  }
+
+  // A bright shopping mall. A wide promenade runs down the middle from the glass entrance doors in the west wall,
+  // with a fountain, benches, planters, kiosk carts and an escalator (closed). Shops with glass fronts line both
+  // sides; some have back doors onto the staff service corridors behind them, which make loops for running away.
+  // The food court fills the south-east corner, and the toilets are off a staff passage near the east end.
+  const MALL_TALL = new Set(['rack', 'fitting', 'shoeshelf', 'toyshelf', 'teddy', 'tvwall', 'bookshelf', 'sportshelf', 'pharmshelf',
+    'stall', 'escalator', 'directory']);
+  // the shops: where they are (x0..x1 wide; the north row is rows 4-10, the south row 20-26), what they sell, the
+  // name on the sign, its color, and the column of their back door (if any)
+  const MALL_SHOPS = [
+    { x0: 1, x1: 6, row: 'n', theme: 'fashion', name: 'Bloom', color: '#d96ba0', back: 3 },
+    { x0: 8, x1: 13, row: 'n', theme: 'shoes', name: 'Stride', color: '#e08a3a' },
+    { x0: 15, x1: 20, row: 'n', theme: 'toys', name: 'Toy Town', color: '#3d9be0', back: 17 },
+    { x0: 22, x1: 27, row: 'n', theme: 'tech', name: 'Voltz', color: '#5b6bd6' },
+    { x0: 29, x1: 34, row: 'n', theme: 'books', name: 'Pages', color: '#8a6a4a', back: 31 },
+    { x0: 1, x1: 6, row: 's', theme: 'cafe', name: 'Bean There', color: '#7a5230', back: 4 },
+    { x0: 8, x1: 13, row: 's', theme: 'sports', name: 'Pro Sport', color: '#2f9e6a' },
+    { x0: 15, x1: 20, row: 's', theme: 'pharmacy', name: 'Pharmacy', color: '#25a39a', back: 18 },
+    { x0: 22, x1: 26, row: 's', theme: 'jewelry', name: 'Gem', color: '#b8912e', back: 22 },
+  ];
+  function genMall() {
+    const { g, items, rooms, glass, doors, windows, fill, hwall, vwall, glassH, put, room, check } = floorPlan(MALL_TALL);
+    for (let y = 12; y <= 18; y++) windows.push({ x: 0, y }); // the glass entrance doors
+
+    // ---- staff service corridors behind the shops, and the walls between them and the shops
+    room('service', 1, 1, 39, 2);
+    room('service', 1, 28, 26, 29);
+    hwall(3, 1, 39, ...MALL_SHOPS.filter(s => s.row === 'n' && s.back).map(s => s.back), 36);
+    hwall(27, 1, 26, ...MALL_SHOPS.filter(s => s.row === 's' && s.back).map(s => s.back));
+
+    // ---- the shops: side walls, a glass shopfront with a 2-wide doorway, and stock
+    for (const s of MALL_SHOPS) {
+      const north = s.row === 'n', y0 = north ? 4 : 20, y1 = north ? 10 : 26, front = north ? 11 : 19, door = s.x0 + 2;
+      vwall(s.x1 + 1, north ? 3 : 19, north ? 11 : 27);
+      glassH(front, s.x0, s.x1, door, door + 1);
+      room('shop', s.x0, y0, s.x1, y1, { theme: s.theme, name: s.name, color: s.color, front, door, north });
+    }
+    // north row: the shopfront is at the bottom (row 11), the back wall at the top (row 3)
+    put('rack', 1, 5, 1, 4, { face: 1 }); put('rack', 6, 6, 1, 3, { face: -1 }); put('fitting', 5, 4, 2, 1); // Bloom (fashion)
+    put('table', 3, 6, 2, 1, { kind: 'clothes' }); put('mannequin', 2, 8); put('mannequin', 5, 8); put('counter', 1, 10, 1, 1);
+    put('shoeshelf', 8, 4, 1, 5, { face: 1 }); put('shoeshelf', 13, 4, 1, 5, { face: -1 }); // Stride (shoes)
+    put('bench', 10, 6, 2, 1); put('counter', 10, 4, 2, 1); put('mirror', 12, 9);
+    put('toyshelf', 15, 4, 1, 4, { face: 1 }); put('toyshelf', 20, 4, 1, 4, { face: -1 }); // Toy Town
+    put('teddy', 19, 9); put('table', 16, 7, 2, 1, { kind: 'toys' }); put('counter', 15, 9, 1, 1);
+    put('tvwall', 22, 4, 1, 5, { face: 1 }); put('table', 24, 5, 2, 1, { kind: 'tech' }); put('table', 24, 8, 2, 1, { kind: 'tech' }); // Voltz
+    put('counter', 27, 4, 1, 2);
+    put('bookshelf', 29, 4, 1, 5, { face: 1 }); put('bookshelf', 34, 4, 1, 5, { face: -1 }); put('bookshelf', 31, 6, 2, 2, { face: 0 }); // Pages
+    put('armchair', 30, 9, 1, 1, { color: '#c0653c', face: 0 }); put('armchair', 33, 9, 1, 1, { color: '#4f86c6', face: 2 });
+    // south row: the shopfront is at the top (row 19), the back wall at the bottom (row 27)
+    put('cafecounter', 1, 26, 2, 1); put('bistro', 2, 22); put('bistro', 5, 22); put('bistro', 5, 25); put('plant', 1, 20); // Bean There
+    put('sportshelf', 8, 20, 1, 5, { face: 1 }); put('bike', 12, 21, 2, 1); put('treadmill', 10, 24, 2, 1); put('ballbin', 13, 25); // Pro Sport
+    put('pharmshelf', 15, 21, 1, 5, { face: 1 }); put('pharmshelf', 20, 23, 1, 3, { face: -1 }); put('counter', 19, 20, 2, 1); // Pharmacy
+    put('case', 22, 21, 1, 3); put('case', 26, 21, 1, 3); put('case', 24, 25, 3, 1); // Gem (jewelry)
+
+    // ---- the promenade
+    room('promenade', 1, 12, 39, 18);
+    put('fountain', 19, 14, 3, 3); put('bench', 16, 14, 1, 3); put('bench', 24, 14, 1, 3);
+    for (const [x, y] of [[7, 12], [7, 18], [28, 12], [28, 18], [13, 12], [13, 18]]) put('planter', x, y);
+    put('kiosk', 11, 15, 2, 1, { name: 'Pretzels', color: '#e8a33d' }); put('kiosk', 27, 15, 2, 1, { name: 'Phone cases', color: '#7d5bd6' });
+    put('escalator', 33, 14, 2, 3); put('directory', 6, 15);
+
+    // ---- the staff passage to the toilets (between the bookshop and the east wall)
+    vwall(37, 4, 10, 5, 9); hwall(11, 36, 39, 36); hwall(7, 38, 39);
+    room('passage', 36, 4, 36, 10);
+    room('wc', 38, 4, 39, 6); put('toilet', 39, 4); put('sink', 38, 6);
+    room('wc', 38, 8, 39, 10); put('toilet', 39, 10); put('sink', 38, 8);
+
+    // ---- the food court: stalls along the walls, tables in the middle; a staff door to the service corridor
+    vwall(27, 19, 29, 28);
+    room('food', 28, 19, 39, 29);
+    put('stall', 29, 28, 3, 2, { name: 'PIZZA', color: '#e0583a' }); put('stall', 33, 28, 3, 2, { name: 'BURGERS', color: '#f2a93b' });
+    put('stall', 37, 28, 3, 2, { name: 'SUSHI', color: '#3aa776' }); put('stall', 39, 21, 1, 3, { name: 'ICE CREAM', color: '#f07cb0', side: 'e' });
+    for (const x of [30, 33, 36]) for (const y of [21, 24]) put('dtable', x, y);
+    put('planter', 39, 19);
+
+    const spawns = [];
+    for (let y = 13; y <= 15; y++) for (let x = 2; x <= 5; x++) spawns.push([x, y]); // just inside the entrance
+    check('mall', spawns);
+    return { name: 'mall', grid: g, floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns, yaw: 0, bright: true,
+      mall: { items, rooms, glass, doors, windows } };
+  }
+
+  // ---------------------------------------------------------------- two real floors, one above the other
+  // A map with an upper floor (the library) has a second grid, `upper`, for the floor above. Its value 4 is a hole
+  // in the floor (the open atrium, stairwells): you can't walk there, but you can see across it and down through it.
+  // `ramps` are staircases you actually walk up: { x0, y0, x1, y1, dir } where dir is the way you climb
+  // ('n' = toward the top of the map). Their tiles are open on both grids; everything beside a staircase is blocked
+  // on both floors, so the only ways on and off are its two ends: the bottom onto the ground floor, the top onto the
+  // floor above. Every player has a floor, `fl` (0 or 1): past halfway up a staircase you're upstairs.
+  // how far up a staircase a map-space point is (0 at the bottom edge, 1 at the top), or null if it isn't on one
+  S.rampAt = function (ramps, px, py) {
+    if (!ramps) return null;
+    const tx = Math.floor(px / TILE), ty = Math.floor(py / TILE);
+    for (const r of ramps) {
+      if (tx < r.x0 || tx > r.x1 || ty < r.y0 || ty > r.y1) continue;
+      const k = r.dir === 'n' ? ((r.y1 + 1) * TILE - py) / ((r.y1 - r.y0 + 1) * TILE) : r.dir === 's' ? (py - r.y0 * TILE) / ((r.y1 - r.y0 + 1) * TILE)
+        : r.dir === 'e' ? (px - r.x0 * TILE) / ((r.x1 - r.x0 + 1) * TILE) : ((r.x1 + 1) * TILE - px) / ((r.x1 - r.x0 + 1) * TILE);
+      return { r, h: Math.max(0, Math.min(1, k)) };
+    }
+    return null;
+  };
+  // which floor you're on after moving to (px, py), if you were on floor `fl`
+  S.nextFloor = (L, px, py, fl) => { const a = L.upper && S.rampAt(L.ramps, px, py); return a ? (a.h >= 0.5 ? 1 : 0) : fl || 0; };
+  // how high up you are, in floors: your floor, or part way up a staircase
+  S.elev = (L, o) => { if (!L.upper) return 0; const a = S.rampAt(L.ramps, o.x, o.y); return a ? a.h : o.fl || 0; };
+  // what to collide with (and what blocks light) on a floor: the ground floor is the map itself, the upper floor its `upper` grid
+  S.world = (L, fl) => fl && L.upper ? (L._up || (L._up = { grid: L.upper })) : L;
+  // can you see between the floors here? Only where the floor above is open: over the atrium and the staircases
+  S.openAbove = (L, px, py) => {
+    const tx = Math.floor(px / TILE), ty = Math.floor(py / TILE);
+    return !!L.upper && tx >= 0 && ty >= 0 && tx < COLS && ty < ROWS && (L.upper[ty][tx] === 4 || !!S.rampAt(L.ramps, px, py));
+  };
+  // distances (in steps) from a tile to every tile on every floor: index fl * COLS * ROWS + tile.
+  // Uses the staircases (and the apartment's stairs).
+  S.reach = function (L, sx, sy) {
+    const N = COLS * ROWS, grids = L.upper ? [L.grid, L.upper] : [L.grid], ramp = new Uint8Array(N);
+    for (const r of L.ramps || []) for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) ramp[I(x, y)] = 1;
+    const links = S.stairLinks(L.stairs || []);
+    const d = new Int16Array(N * grids.length).fill(-1), q = new Int32Array(N * grids.length); let h = 0, t = 0;
+    d[I(sx, sy)] = 0; q[t++] = I(sx, sy);
+    const visit = (ni, c) => { if (d[ni] === -1) { d[ni] = d[c] + 1; q[t++] = ni; } };
+    while (h < t) {
+      const c = q[h++], f = c >= N ? 1 : 0, i = c - f * N, x = i % COLS, y = (i / COLS) | 0;
+      for (const [dx, dy] of DIRS) {
+        const nx = x + dx, ny = y + dy;
+        if (nx >= 0 && ny >= 0 && nx < COLS && ny < ROWS && grids[f][ny][nx] === 0) visit(f * N + I(nx, ny), c);
+      }
+      if (ramp[i] && grids.length > 1) visit((1 - f) * N + i, c);
+      const l = links.get(i);
+      if (l) for (const ni of l) if (grids[f][(ni / COLS) | 0][ni % COLS] === 0) visit(f * N + ni, c);
+    }
+    return { d, N, grids, ramp };
+  };
+
+  // A big bright library on two floors, joined by three staircases you walk up: a grand one in the middle of the
+  // atrium and one at each end of the building. The atrium goes up through both floors under a glass roof; upstairs,
+  // a gallery with a railing runs all the way around it, so you can look down into it (and be seen from it).
+  // Ground floor: the entrance lobby with the front desk, the atrium with reading tables, a reading room with a
+  // fireplace, the fiction stacks (west), newspapers, computers and more stacks (east), a children's corner and a café.
+  // Upstairs: the gallery, a study hall with carrels, the history stacks, the rare-books archive, a computer lab,
+  // an exhibition with a dinosaur, and group-study tables.
+  const LIB_TALL = new Set(['shelf', 'fireplace', 'dino']);
+  function genLibrary() {
+    const A = floorPlan(LIB_TALL), B = floorPlan(LIB_TALL); // A: the ground floor, B: upstairs
+    const windows = [];
+    // tall windows all round, two in every three tiles (with a stretch of wall between each pair)
+    for (let x = 2; x < COLS - 2; x++) if (x % 3) windows.push({ x, y: 0 });
+    for (let y = 2; y < ROWS - 2; y++) if (y % 3) windows.push({ x: 0, y }, { x: COLS - 1, y });
+    for (let x = 2; x < COLS - 2; x++) if (x % 3 && (x < 17 || x > 23)) windows.push({ x, y: ROWS - 1 });
+    const entrance = [19, 20, 21]; // glass doors in the bottom wall
+
+    // the same walls on both floors (the upper walls stand on the lower ones), with doorways in the same places
+    for (const P of [A, B]) {
+      P.vwall(12, 1, 29, 4, 13, 14, 20, 26, 27); P.vwall(28, 1, 29, 4, 13, 14, 20, 26, 27);
+      P.hwall(10, 13, 27, 14, 15, 25, 26);
+      P.hwall(23, 1, 11, 5, 6); P.hwall(23, 29, 39, 34, 35);
+    }
+    A.hwall(23, 13, 27, 17, 18, 19, 20, 21, 22, 23); // a wide opening from the lobby into the atrium
+    B.hwall(23, 13, 27, 19, 20, 21); // upstairs: the gallery to the exhibition
+
+    // the staircases: the grand one up the middle of the atrium, and one by each end wall (all climb toward the top of the map)
+    const ramps = [{ x0: 19, y0: 13, x1: 21, y1: 18, dir: 'n', grand: true }, { x0: 1, y0: 15, x1: 2, y1: 20, dir: 'n' }, { x0: 38, y0: 15, x1: 39, y1: 20, dir: 'n' }];
+    // upstairs: the open atrium, and the holes the staircases come up through
+    B.fill(15, 13, 25, 20, 4);
+    B.fill(3, 15, 3, 20, 4); B.fill(1, 21, 2, 21, 4);
+    B.fill(37, 15, 37, 20, 4); B.fill(38, 21, 39, 21, 4);
+    for (const r of ramps) B.fill(r.x0, r.y0, r.x1, r.y1, 0);
+    // downstairs: low bookcases along the sides of each staircase, and something solid under the top of each one
+    A.put('lowshelf', 18, 13, 1, 6, { face: -1 }); A.put('lowshelf', 22, 13, 1, 6, { face: 1 }); A.put('display', 18, 12, 5, 1);
+    A.put('lowshelf', 3, 15, 1, 6, { face: 1 }); A.put('shelf', 1, 14, 2, 1);
+    A.put('lowshelf', 37, 15, 1, 6, { face: -1 }); A.put('shelf', 38, 14, 2, 1);
+
+    // ================= ground floor
+    // the reading room (top middle): a fireplace, armchairs and long tables
+    A.room('reading', 13, 1, 27, 9);
+    A.put('fireplace', 19, 1, 3, 1); A.put('armchair', 18, 3, 1, 1, { color: '#8a3b34', face: 0 }); A.put('armchair', 22, 3, 1, 1, { color: '#8a3b34', face: 2 });
+    A.put('readtable', 14, 5, 4, 2); A.put('readtable', 23, 5, 4, 2); A.put('readtable', 14, 8, 4, 1); A.put('readtable', 23, 8, 4, 1);
+    A.put('plant', 13, 1); A.put('plant', 27, 1);
+    // the atrium: reading tables either side of the grand staircase
+    A.room('atrium', 13, 11, 27, 22);
+    for (const [x, y] of [[14, 15], [24, 15], [14, 19], [24, 19]]) A.put('readtable', x, y, 3, 2);
+    // the fiction stacks (left wing)
+    A.room('stacks', 1, 1, 11, 22, { label: 'FICTION' });
+    for (const y of [3, 6, 9, 12]) A.put('shelf', 4, y, 7, 1);
+    for (const y of [16, 19]) A.put('shelf', 5, y, 6, 1);
+    // newspapers, computers and more stacks (right wing)
+    A.room('media', 29, 1, 39, 13);
+    A.put('magrack', 30, 1, 3, 1); A.put('magrack', 35, 1, 3, 1);
+    A.put('pcdesk', 30, 4, 6, 1); A.put('pcdesk', 30, 7, 6, 1);
+    A.put('armchair', 30, 11, 1, 1, { color: '#3f6f8f', face: 0 }); A.put('lowtable', 31, 11, 2, 1); A.put('armchair', 33, 11, 1, 1, { color: '#3f6f8f', face: 2 });
+    A.put('plant', 39, 11);
+    A.room('stacks', 29, 14, 39, 22, { label: 'SCIENCE' });
+    for (const y of [16, 19]) A.put('shelf', 30, y, 6, 1);
+    // the lobby, just inside the entrance: the front desk, a bench, a book-return box
+    A.room('lobby', 13, 24, 27, 29);
+    A.put('desk', 23, 25, 4, 2); A.put('bench', 14, 25, 1, 2); A.put('returnbox', 26, 28); A.put('plant', 13, 29); A.put('plant', 27, 24);
+    // the children's corner (bottom left)
+    A.room('kids', 1, 24, 11, 29);
+    A.put('kidshelf', 1, 24, 1, 4); A.put('kidtable', 4, 25, 2, 1); A.put('castle', 8, 24, 2, 2);
+    A.put('beanbag', 3, 28, 1, 1, { color: '#e85d5d' }); A.put('beanbag', 6, 28, 1, 1, { color: '#4aa3df' }); A.put('beanbag', 9, 28, 1, 1, { color: '#f2b43b' });
+    // the café (bottom right)
+    A.room('cafe', 29, 24, 39, 29);
+    A.put('cafecounter', 36, 24, 4, 1);
+    for (const [x, y] of [[31, 26], [34, 26], [31, 28], [34, 28], [37, 27]]) A.put('bistro', x, y);
+
+    // ================= upstairs
+    B.room('gallery', 13, 11, 27, 22);
+    // the study hall (top middle): rows of study carrels, a globe, a long table
+    B.room('study', 13, 1, 27, 9);
+    B.put('carrel', 14, 2, 5, 1); B.put('carrel', 22, 2, 5, 1); B.put('carrel', 14, 5, 5, 1); B.put('carrel', 22, 5, 5, 1);
+    B.put('globe', 20, 4); B.put('readtable', 17, 7, 7, 1);
+    // the history stacks (left wing)
+    B.room('stacks', 1, 1, 11, 22, { label: 'HISTORY' });
+    for (const y of [3, 6, 9, 12]) B.put('shelf', 4, y, 7, 1);
+    for (const y of [16, 19]) B.put('shelf', 5, y, 6, 1);
+    // the rare-books archive (right wing): tall cases, glass display cases, a map table
+    B.room('archive', 29, 1, 39, 22, { label: 'RARE BOOKS' });
+    for (const x of [30, 33, 36]) B.put('shelf', x, 2, 1, 5);
+    B.put('case', 31, 9, 2, 1); B.put('case', 35, 9, 2, 1); B.put('maptable', 32, 11, 3, 1);
+    for (const y of [17, 20]) B.put('shelf', 30, y, 6, 1);
+    // the computer lab (bottom left)
+    B.room('lab', 1, 24, 11, 29);
+    B.put('pcdesk', 2, 25, 8, 1); B.put('pcdesk', 2, 28, 8, 1);
+    // the exhibition (bottom middle): a clay dinosaur and display cases
+    B.room('exhibit', 13, 24, 27, 29);
+    B.put('dino', 18, 26, 5, 2); B.put('case', 14, 25, 1, 2); B.put('case', 26, 25, 1, 2); B.put('case', 14, 28, 2, 1); B.put('case', 25, 28, 2, 1);
+    // group study (bottom right)
+    B.room('group', 29, 24, 39, 29);
+    B.put('roundtable', 31, 26, 2, 2); B.put('roundtable', 36, 26, 2, 2); B.put('plant', 39, 24); B.put('plant', 29, 29);
+
+    const spawns = [];
+    for (let y = 26; y <= 27; y++) for (let x = 16; x <= 21; x++) spawns.push([x, y]); // just inside the entrance
+    const L = { name: 'library', grid: A.g, upper: B.g, ramps, floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns, yaw: -Math.PI / 2, bright: true };
+    // every open tile on both floors must be reachable from the entrance
+    const { d, N } = S.reach(L, spawns[0][0], spawns[0][1]);
+    [A.g, B.g].forEach((g, f) => { for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) if (g[y][x] === 0 && d[f * N + I(x, y)] < 0) throw new Error(`library layout: tile ${x},${y} on floor ${f} can't be reached`); });
+    const tag = (list, fl) => list.map(o => ({ ...o, fl }));
+    L.library = { items: [...tag(A.items, 0), ...tag(B.items, 1)], rooms: [...tag(A.rooms, 0), ...tag(B.rooms, 1)], doors: [...tag(A.doors, 0), ...tag(B.doors, 1)], windows, entrance, storyH: 1.7 };
+    return L;
   }
 
   function shuffleIn(a) { for (let i = a.length - 1; i > 0; i--) { const j = rand(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; }

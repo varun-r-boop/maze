@@ -4,7 +4,7 @@
 // cushions, a kitchen with a coffee machine, framed art, lockers, plants everywhere and big dome lamps.
 // Map space -> 3D: x = tile x, z = tile y, y is up; one tile is one unit.
 import * as THREE from 'three';
-import { clay, rbox, blob, hash } from './clay.js';
+import { clay, rbox, blob, hash, clayKit, clayWalls } from './clay.js';
 
 const Sh = window.Shared;
 const { COLS, ROWS } = Sh.C;
@@ -27,18 +27,7 @@ function canvasTex(w, h, draw) {
 
 export function buildOffice(scene, G, WALL_H) {
   const O = G.office;
-  const add = (geo, mat, x, y, z, { ry = 0, rx = 0, rz = 0, cast = true, s } = {}) => {
-    const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
-    if (s) m.scale.set(...s);
-    m.castShadow = cast; m.receiveShadow = true; scene.add(m); return m;
-  };
-  // many copies of one piece, drawn together
-  const many = (geo, mat, list, place, { cast = false } = {}) => {
-    if (!list.length) return;
-    const mesh = new THREE.InstancedMesh(geo, mat, list.length), o = new THREE.Object3D();
-    list.forEach((it, i) => { o.position.set(0, 0, 0); o.rotation.set(0, 0, 0); o.scale.set(1, 1, 1); place(o, it, i); o.updateMatrix(); mesh.setMatrixAt(i, o.matrix); });
-    mesh.castShadow = cast; mesh.receiveShadow = true; scene.add(mesh);
-  };
+  const { add, many } = clayKit(scene);
   // things collected while going through the furniture, drawn together at the end
   const chairs = [], leaves = [], mugs = [], monitors = [], keyboards = [], papers = [];
 
@@ -65,30 +54,7 @@ export function buildOffice(scene, G, WALL_H) {
   // ---- walls: long rounded clay runs, with skirting at the bottom
   const windowAt = new Set(O.windows.map(w => w.y * COLS + w.x));
   const isWall = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS && G.grid[y][x] === 1 && !windowAt.has(y * COLS + x);
-  const used = new Set(), runs = [];
-  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) { // horizontal runs first
-    if (!isWall(x, y) || used.has(y * COLS + x)) continue;
-    let x1 = x; while (isWall(x1 + 1, y)) x1++;
-    if (x1 > x) { // grow the run downwards while the row below is the same solid stretch (one block, not a stack)
-      let y1 = y;
-      const rowFree = yy => { for (let i = x; i <= x1; i++) if (!isWall(i, yy) || used.has(yy * COLS + i)) return false; return isWall(x - 1, yy) === isWall(x - 1, y) && isWall(x1 + 1, yy) === isWall(x1 + 1, y); };
-      while (y1 + 1 < ROWS && rowFree(y1 + 1)) y1++;
-      for (let yy = y; yy <= y1; yy++) for (let i = x; i <= x1; i++) used.add(yy * COLS + i);
-      runs.push({ x0: x, y0: y, x1, y1 });
-    }
-  }
-  for (let x = 0; x < COLS; x++) for (let y = 0; y < ROWS; y++) { // then vertical runs of what's left
-    if (!isWall(x, y) || used.has(y * COLS + x)) continue;
-    let y1 = y; while (isWall(x, y1 + 1) && !used.has((y1 + 1) * COLS + x)) y1++;
-    for (let i = y; i <= y1; i++) used.add(i * COLS + x);
-    runs.push({ x0: x, y0: y, x1: x, y1 });
-  }
-  const skirtMat = clay(P.skirting);
-  for (const r of runs) {
-    const w = r.x1 - r.x0 + 1, d = r.y1 - r.y0 + 1, cx = r.x0 + w / 2, cz = r.y0 + d / 2;
-    add(rbox(w, WALL_H, d, 0.07, 0.006, cx * 3 + cz, 0.09), clay(P.wall, { repeat: [Math.max(w, d), WALL_H] }), cx, WALL_H / 2, cz);
-    add(rbox(w + 0.04, 0.09, d + 0.04, 0.03, 0), skirtMat, cx, 0.045, cz, { cast: false });
-  }
+  clayWalls(add, isWall, COLS, ROWS, WALL_H, P.wall, P.skirting);
 
   // ---- windows: clay frames, glass, and a deep sill; outside, a little clay town
   const frameMat = clay(P.frame), glassMat = new THREE.MeshPhysicalMaterial({ color: '#d8eefa', transparent: true, opacity: 0.16, roughness: 0.05, depthWrite: false });
