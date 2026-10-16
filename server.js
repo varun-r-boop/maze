@@ -8,7 +8,7 @@ const Sh = require('./public/shared.js');
 
 const { TILE, COLS, ROWS, PLAYER_SPEED, PLAYER_R, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, TAG_DIST, RESCUE_DIST,
   IMMUNE, HOLD, ACT_COOLDOWN, DANGER_DIST, ROUND_TIMES, ROUND_DEFAULT, TRAP_STEP, TRAP_COOLDOWN, NOISE_RADIUS, JUMP_T, JUMP_REST,
-  SCULPT_TIME, HIDE_TIME, FIND_DIST, FIND_POINTS, FIND_BONUS, HIDDEN_POINTS } = Sh.C;
+  SCULPT_TIME, HIDE_TIME, FIND_DIST, FIND_POINTS, FIND_BONUS, HIDDEN_POINTS, KEY_DIST, GATE_DIST, CATCH_DIST, BOT_SPEED, BOT_SPEED_END, ZONE_R, ZONE_TIME } = Sh.C;
 const { I, center, tileOf, dist, rand } = Sh;
 const PORT = Number(process.env.PORT) || 3000;
 const TICK_MS = 50;
@@ -153,7 +153,7 @@ function leave(c) {
     const g = r.game, p = g.players.find(p => p.id === c.id);
     g.players = g.players.filter(p => p.id !== c.id);
     if (p) note(r, `${p.name} left the round.`, '#ffab91', 3);
-    if (g.mode === 'clay') clayLeft(r, c.id); else if (g.mode === 'fight') fightLeft(r, c.id); else checkWin(r);
+    if (g.mode === 'clay') clayLeft(r, c.id); else if (g.mode === 'fight') fightLeft(r, c.id); else { if (g.mode === 'escape') g.keys.delete(c.id); checkWin(r); }
   }
   broadcastLobby(r);
 }
@@ -161,7 +161,7 @@ function leave(c) {
 // ---------------------------------------------------------------- a round
 function startGame(r) {
   const cl = [...r.clients.values()].sort((a, b) => a.slot - b.slot);
-  const n = cl.length, explore = n === 1; // alone: no taggers and no clock, just a map to walk around
+  const n = cl.length, explore = n === 1 && r.mode !== 'escape'; // alone: no taggers and no clock, just a map to walk around (key escape you can play alone, against the bot)
   const fightMode = r.mode === 'fight' && !explore;
   const level = Sh.genLevel(r.mode === 'fight' ? 'arena' : r.map), grid = level.grid; // (alone with arena fights picked, you explore the arena)
   const links = Sh.stairLinks(level.stairs);
@@ -170,7 +170,8 @@ function startGame(r) {
 
   // roles: random taggers; runners start at the map's spawn, taggers far away from them (and from each other)
   const clayMode = r.mode === 'clay' && !explore; // (on your own you explore, whichever mode is picked)
-  const taggers = new Set(explore || clayMode || fightMode ? [] : shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
+  const escMode = r.mode === 'escape'; // (everyone runs; bots do the chasing)
+  const taggers = new Set(explore || clayMode || fightMode || escMode ? [] : shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
   const far = [];
   for (const k of [0.6, 0]) { // (anywhere reachable, if no spot is that far away; never on a staircase)
     reach.grids.forEach((gr, fl) => {
@@ -178,8 +179,8 @@ function startGame(r) {
     });
     if (far.length) break;
   }
-  const taggerSpots = [];
-  for (let tries = 0; taggerSpots.length < taggers.size; tries++) {
+  const taggerSpots = [], hunters = escMode ? Sh.botCount(n) : taggers.size; // (in key escape: where the bots start)
+  for (let tries = 0; taggerSpots.length < hunters; tries++) {
     const t = far[rand(far.length)];
     if (tries < 500 && taggerSpots.some(s => Math.abs(s.x - t.x) + Math.abs(s.y - t.y) < 8)) continue;
     taggerSpots.push(t);
@@ -188,7 +189,7 @@ function startGame(r) {
   const now = Date.now();
   let runnerIdx = 0, taggerIdx = 0;
   const g = {
-    mode: clayMode ? 'clay' : fightMode ? 'fight' : 'tag', time: 0, roundTime: r.roundTime, explore, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
+    mode: clayMode ? 'clay' : fightMode ? 'fight' : escMode ? 'escape' : 'tag', time: 0, roundTime: r.roundTime, explore, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
     stairAt: new Map(level.stairs.map(s => [I(s.x, s.y), s])),
     players: cl.map(c => {
       const it = taggers.has(c.id), spot = it ? taggerSpots[taggerIdx++] : { x: level.spawns[runnerIdx][0], y: level.spawns[runnerIdx++][1] };
@@ -196,13 +197,14 @@ function startGame(r) {
         id: c.id, slot: c.slot, name: c.name, char: c.char, role: clayMode ? 'clay' : fightMode ? 'fan' : it ? 'it' : 'run', score: 0, finds: 0, target: null,
         fighter: Sh.cleanFighter(c.fighter, c.slot), hp: Sh.FIGHT.HP, meter: 0, act: null, block: false, mwins: 0,
         x: center(spot.x), y: center(spot.y), fl: spot.fl || 0, yaw: level.yaw ?? Sh.START_YAW, jumps: 0, airUntil: 0,
-        frozen: false, immune: 0, nextAct: 0, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now,
+        frozen: false, immune: 0, nextAct: 0, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now, hasKey: false, unlocked: false, escaped: false, escapedAt: 0,
       };
     }),
   };
 
-  g.traps = clayMode || level.name === 'arena' ? [] : placeTraps(level, reach);
+  g.traps = clayMode || escMode || level.name === 'arena' ? [] : placeTraps(level, reach);
   if (fightMode) Object.assign(g, { arena: level.arena, spawns: level.spawns, beams: [] });
+  if (escMode) setupEscape(g, level, reach, taggerSpots);
   if (clayMode) Object.assign(g, { phase: 'sculpt', phaseEnd: SCULPT_TIME + 3, sculpts: new Map(), objs: new Map(), spawns: level.spawns }); // (3s for the last sculptures to arrive)
 
   clearInterval(r.timer);
@@ -210,12 +212,14 @@ function startGame(r) {
   const roster = g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, char: p.char, role: p.role, x: p.x, y: p.y, fl: p.fl, fighter: p.fighter }));
   const deco = { flights: level.flights || [], rooms: level.rooms || [], furniture: level.furniture || [], doors: level.doors || [], forest: level.forest || null, office: level.office || null, mall: level.mall || null, bright: !!level.bright,
     upper: level.upper || null, ramps: level.ramps || [], library: level.library || null, arena: level.arena || null };
-  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, mode: g.mode, phase: g.phase, sculptTime: SCULPT_TIME, traps: g.traps.map(({ id, x, y, fl, kind }) => ({ id, x, y, fl, kind })), explore });
+  for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, mode: g.mode, phase: g.phase, sculptTime: SCULPT_TIME, traps: g.traps.map(({ id, x, y, fl, kind }) => ({ id, x, y, fl, kind })), explore,
+    ...(escMode ? { gate: g.gate, key: g.keys.get(c.id) } : {}) }); // (in key escape you only know where your own key is)
   broadcastLobby(r);
   const its = g.players.filter(p => p.role === 'it'), names = its.map(p => p.name).join(' and ');
   if (explore) tell(r, g.players[0], 'Exploring on your own: no taggers, no clock. Invite friends to play.', '#69f0ae', 5);
   else if (clayMode) note(r, 'Sculpt your clay! Then you will hide it, and hunt for someone else\'s.', '#ffe9a8', 5);
   else if (fightMode) { note(r, 'Arena fights! Everyone is in the bracket: two fight while the rest watch from the stands.', '#ffd54f', 5); fightBegin(r); }
+  else if (escMode) note(r, `Find your key and unlock your lock on the gate${g.players.length > 1 ? ': it only opens once everyone has unlocked theirs' : ''}! ${g.bots.length > 1 ? `${g.bots.length} bots wake` : 'The bot wakes'} up in ${HOLD}s. Hide in the green safe box.`, '#ffe9a8', 6);
   else for (const p of g.players) {
     if (p.role === 'it') tell(r, p, `You're IT${its.length > 1 ? ` (with ${its.filter(o => o !== p).map(o => o.name).join(', ')})` : ''}! Catch the runners and tag them.`, '#ff5252', 5);
     else tell(r, p, `${names} ${its.length > 1 ? 'are' : 'is'} IT! Run, and unfreeze your friends.`, '#69f0ae', 5);
@@ -239,7 +243,7 @@ function onPos(r, c, m) {
   }
   const fighting = g.mode === 'fight' && g.match && (p.id === g.match.a || p.id === g.match.b);
   const pinned = fighting && (g.fphase !== 'fight' || (g.time < p.stunUntil && now0 > p.kbUntil));
-  if (p.frozen || (p.role === 'it' && g.time < HOLD) || g.phase === 'sculpt' || pinned) { if (Math.hypot(m.x - p.x, m.y - p.y) > 2) teleport(r, p, p.x, p.y); return; }
+  if (p.frozen || p.escaped || (p.role === 'it' && g.time < HOLD) || g.phase === 'sculpt' || pinned) { if (Math.hypot(m.x - p.x, m.y - p.y) > 2) teleport(r, p, p.x, p.y); return; }
   const x = Number(m.x), y = Number(m.y), now = Date.now();
   const dt = (now - p.lastPosT) / 1000;
   let speed = PLAYER_SPEED * (p.role === 'it' ? TAGGER_SPEED : 1);
@@ -262,7 +266,7 @@ function teleport(r, p, x, y, a) { // `a`: face this way afterwards (used by sta
 // someone: a tagger freezes the nearest free runner within reach; a free runner unfreezes the nearest frozen one.
 function onAct(r, c) {
   const g = r.game, p = g.players.find(p => p.id === c.id);
-  if (g.mode !== 'tag' || !p || p.frozen || g.time < p.nextAct) return;
+  if ((g.mode !== 'tag' && g.mode !== 'escape') || !p || p.frozen || p.escaped || g.time < p.nextAct) return;
   p.nextAct = g.time + ACT_COOLDOWN; // no machine-gun clicking
   const near = (want, reach) => g.players.filter(o => o !== p && want(o) && sameFloor(g, o, p) && dist(o, p) <= reach)
     .sort((a, b) => dist(a, p) - dist(b, p))[0];
@@ -293,10 +297,11 @@ function tick(r) {
   const wasHold = g.time < HOLD;
   g.time += dt;
   if (wasHold && g.time >= HOLD && g.mode === 'tag') note(r, 'The taggers are coming!', '#ff5252', 2.5);
+  if (wasHold && g.time >= HOLD && g.mode === 'escape') note(r, g.bots.length > 1 ? 'The bots are awake!' : 'The bot is awake!', '#ff5252', 2.5);
 
   for (const p of g.players) {
     p.immune = Math.max(0, p.immune - dt);
-    if (p.frozen) continue;
+    if (p.frozen || p.escaped) continue;
     const t = tileOf(p), stair = g.stairAt.get(I(t.x, t.y));
     if (stair) { // walked onto a staircase: arrive next to the matching one on the other floor
       p.yaw = stair.a ?? p.yaw;
@@ -306,6 +311,7 @@ function tick(r) {
 
   if (g.mode === 'clay') { clayTick(r, dt); if (r.state === 'play') sendSnapshots(r); return; }
   if (g.mode === 'fight') { fightTick(r, dt); if (r.state === 'play') sendSnapshots(r); return; }
+  if (g.mode === 'escape') escapeTick(r, dt);
   const runners = g.players.filter(p => p.role === 'run');
   if (!g.explore) stepOnTraps(r, runners, dt);
   checkWin(r);
@@ -355,6 +361,7 @@ function checkWin(r) {
   if (r.state !== 'play') return;
   const g = r.game, runners = g.players.filter(p => p.role === 'run');
   if (g.explore) return; // nothing to win; it lasts until you go back to the lobby or leave
+  if (g.mode === 'escape') return checkEscape(r);
   if (!g.players.some(p => p.role === 'it')) return endGame(r, 'run', 'The taggers left.');
   if (!runners.length) return endGame(r, 'it', 'All the runners left.');
   if (runners.every(p => p.frozen)) return endGame(r, 'it', 'Every runner is frozen.');
@@ -370,8 +377,8 @@ function endGame(r, winner, reason) {
   r.state = 'ended';
   sendSnapshots(r);
   broadcast(r, {
-    t: 'end', winner, reason, time: Math.min(g.time, g.roundTime),
-    stats: g.players.map(p => ({ name: p.name, slot: p.slot, role: p.role, tags: p.tags, saves: p.saves, timesFrozen: p.timesFrozen, frozen: p.frozen })),
+    t: 'end', mode: g.mode, winner, reason, time: Math.min(g.time, g.roundTime),
+    stats: g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, role: p.role, tags: p.tags, saves: p.saves, timesFrozen: p.timesFrozen, frozen: p.frozen, hasKey: p.hasKey, unlocked: p.unlocked, escaped: p.escaped, escapedAt: Math.round(p.escapedAt) })),
   });
   broadcastLobby(r);
 }
@@ -384,7 +391,7 @@ function sendSnapshots(r) {
     time: g.time, tc: g.traps.filter(t => t.cd > 0).map(t => t.id), // traps that just went off
     players: g.players.map(p => ({
       id: p.id, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.yaw * 100) / 100,
-      fz: p.frozen, imm: p.immune > 0, tags: p.tags, f: p.fl, j: p.jumps, sc: Math.floor(p.score),
+      fz: p.frozen, imm: p.immune > 0, tags: p.tags, f: p.fl, j: p.jumps, sc: Math.floor(p.score), k: p.hasKey, u: p.unlocked, e: p.escaped,
       ...(g.mode === 'fight' ? { hp: p.hp, mt: Math.floor(p.meter), ak: p.act ? p.act.k : null, sd: p.act ? p.act.side : null, at: p.act ? Math.round((g.time - p.act.t0) * 100) / 100 : 0,
         bk: p.block, st: g.time < p.stunUntil, dg: g.time < p.dodgeUntil } : {}),
     })),
@@ -393,17 +400,181 @@ function sendSnapshots(r) {
     fm: g.match ? { a: g.match.a, b: g.match.b, w: g.match.wins, rn: g.match.round } : null, fp: g.fphase, left: Math.max(0, Math.round((g.fUntil - g.time) * 10) / 10),
     beams: g.beams.map(b => ({ x: Math.round(b.x), y: Math.round(b.y), a: Math.round(b.a * 1000) / 1000, k: b.k, t: Math.round((g.time - b.t0) * 100) / 100 })),
   });
+  if (g.mode === 'escape') Object.assign(shared, {
+    bots: g.bots.map(b => ({ x: Math.round(b.x), y: Math.round(b.y), f: b.fl, a: Math.round(b.yaw * 100) / 100 })),
+    go: g.gateOpen, zone: g.zone, zl: Math.max(0, Math.round((g.zoneNext - g.time) * 10) / 10), // where the safe zone is, and when it moves
+  });
   if (g.mode === 'clay') Object.assign(shared, { ph: g.phase, left: Math.max(0, Math.round((g.phaseEnd - g.time) * 10) / 10) });
   for (const p of g.players) {
     const c = r.clients.get(p.id);
     if (!c) continue;
     let danger = 0;
-    if (p.role === 'run' && !p.frozen) for (const T of g.players) {
-      if (T.role !== 'it' || !sameFloor(g, T, p) || g.time < HOLD) continue;
+    if (p.role === 'run' && !p.frozen && !p.escaped) for (const T of g.mode === 'escape' ? g.bots : g.players) { // (in key escape: the bots)
+      if ((g.mode !== 'escape' && T.role !== 'it') || !sameFloor(g, T, p) || g.time < HOLD) continue;
       danger = Math.max(danger, 1 - dist(T, p) / (TILE * DANGER_DIST));
     }
     send(c.ws, { t: 's', ...shared, danger, chase: danger > 0.45 });
   }
+}
+
+// ---------------------------------------------------------------- key escape
+// Everyone has their own key hidden somewhere on the map: walk over it to pick it up, then take it to the gate to
+// unlock your own lock on it. The gate only opens once everyone has unlocked theirs; then anyone can get out.
+// Bots hunt everyone down (caught = frozen, and a friend can unfreeze you, like in freeze tag). Standing in the safe
+// zone keeps you safe from them, but it moves somewhere else every ZONE_TIME seconds.
+const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const stairTiles = level => new Set([...(level.flights || []).flatMap(f => Array.from({ length: f.y1 - f.y0 + 1 }, (_, i) => I(f.x, f.y0 + i))), ...level.stairs.map(s => I(s.x, s.y))]);
+function setupEscape(g, level, reach, botSpots) {
+  const { d, N, grids, ramp } = reach, stairs = stairTiles(level);
+  let maxD = 0; for (const v of d) if (v > maxD) maxD = v;
+  const open = []; // floor you can get to from the start, not on the stairs
+  grids.forEach((gr, fl) => {
+    for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++)
+      if (gr[y][x] === 0 && d[fl * N + I(x, y)] >= 0 && !ramp[I(x, y)] && !stairs.has(I(x, y))) open.push({ x, y, fl, d: d[fl * N + I(x, y)] });
+  });
+  const far = k => { const c = open.filter(t => t.d >= maxD * k); return c.length ? c : open; };
+  // the gate: about as far from the start as you can get
+  const gates = far(0.8), gt = gates[rand(gates.length)];
+  g.gate = { x: center(gt.x), y: center(gt.y), fl: gt.fl };
+  // everyone's key: away from the start, and spread out (from each other and from the gate)
+  g.keys = new Map();
+  const used = [gt], cands = shuffleArr(far(0.3).slice()), apart = (t, n) => used.every(u => u.fl !== t.fl || Math.abs(u.x - t.x) + Math.abs(u.y - t.y) >= n);
+  for (const p of g.players) {
+    const t = cands.find(t => apart(t, 6)) || cands.find(t => apart(t, 1)) || cands[0];
+    used.push(t); g.keys.set(p.id, { x: center(t.x), y: center(t.y), fl: t.fl });
+  }
+  // where the safe zone can go: somewhere roomy (not a dead end in a narrow corridor)
+  const roomy = open.filter(t => { let n = 0; for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) { const r = grids[t.fl][t.y + dy]; if (r && r[t.x + dx] === 0) n++; } return n >= 13; });
+  g.zoneSpots = roomy.length >= 4 ? roomy : open;
+  g.ramp = ramp; g.zone = null; g.gateOpen = false; moveZone(g);
+  g.bots = botSpots.map(s => ({ x: center(s.x), y: center(s.y), fl: s.fl || 0, yaw: 0 }));
+}
+// the safe zone moves: somewhere at least 8 tiles away from where it was
+function moveZone(g) {
+  const old = g.zone, c = g.zoneSpots.filter(t => !old || t.fl !== old.fl || Math.abs(t.x - old.tx) + Math.abs(t.y - old.ty) >= 8);
+  const t = (c.length ? c : g.zoneSpots)[rand((c.length ? c : g.zoneSpots).length)];
+  const z = g.zone = { x: center(t.x), y: center(t.y), fl: t.fl, r: ZONE_R * TILE, tx: t.x, ty: t.y };
+  // the tiles the bot can't step on
+  g.zoneTiles = new Set();
+  const N = COLS * ROWS, zf = Sh.floorOf(g.floors, z.x), R = Math.ceil(ZONE_R);
+  for (let y = t.y - R; y <= t.y + R; y++) for (let x = t.x - R; x <= t.x + R; x++)
+    if (x >= 0 && y >= 0 && x < COLS && y < ROWS && Math.abs(center(x) - z.x) <= z.r && Math.abs(center(y) - z.y) <= z.r && Sh.floorOf(g.floors, center(x)) === zf) g.zoneTiles.add(t.fl * N + I(x, y));
+  g.zoneNext = g.time + ZONE_TIME;
+}
+// the safe zone is a square box, `r` from its middle to each side
+const inZone = (g, p) => sameFloor(g, p, g.zone) && Math.abs(p.x - g.zone.x) <= g.zone.r && Math.abs(p.y - g.zone.y) <= g.zone.r;
+
+function escapeTick(r, dt) {
+  const g = r.game;
+  if (g.time >= g.zoneNext) {
+    const was = g.players.filter(p => !p.frozen && !p.escaped && inZone(g, p));
+    moveZone(g);
+    for (const p of was) if (!inZone(g, p)) tell(r, p, 'The safe zone moved! Find the new one.', '#69f0ae', 2.5);
+  }
+  for (const p of g.players) { // picking up your key, unlocking your lock on the gate, and getting out once it's open
+    if (p.frozen || p.escaped) continue;
+    const k = g.keys.get(p.id);
+    if (!p.hasKey && k && sameFloor(g, p, k) && dist(p, k) <= KEY_DIST) { p.hasKey = true; tell(r, p, 'You found your key! Now take it to the gate.', '#ffd54f', 3); }
+    if (!sameFloor(g, p, g.gate) || dist(p, g.gate) > GATE_DIST) continue;
+    if (p.hasKey && !p.unlocked) {
+      p.unlocked = true;
+      const done = g.players.filter(q => q.unlocked).length;
+      if (done < g.players.length) note(r, `${p.name} unlocked their lock on the gate (${done}/${g.players.length}). Everyone has to unlock theirs!`, '#ffd54f', 3);
+    }
+    if (g.gateOpen) {
+      p.escaped = true; p.escapedAt = g.time;
+      teleport(r, p, p.x, p.y); // (and stay put: you're out)
+      note(r, `${p.name} escaped!`, '#69f0ae', 3);
+    }
+  }
+  if (!g.gateOpen && g.players.length && g.players.every(p => p.unlocked)) { // (also when someone who hadn't unlocked theirs leaves)
+    g.gateOpen = true;
+    note(r, g.players.length > 1 ? 'Every lock is open: the gate is open! Everyone get out!' : 'The gate is open! Get out!', '#69f0ae', 4);
+  }
+  if (g.time < HOLD) return; // the bots wait out the head start
+  const speed = PLAYER_SPEED * (BOT_SPEED + (BOT_SPEED_END - BOT_SPEED) * Math.min(1, g.time / g.roundTime)); // (they speed up as the round goes on)
+  for (const b of g.bots) {
+    moveBot(g, b, speed * dt);
+    const t = tileOf(b), stair = g.stairAt.get(I(t.x, t.y));
+    if (stair) { b.x = center(stair.tx); b.y = center(stair.ty); b.yaw = stair.a ?? b.yaw; } // took the stairs, like a player
+    for (const p of g.players) {
+      if (p.frozen || p.escaped || p.immune > 0 || inZone(g, p) || !sameFloor(g, b, p) || dist(b, p) > CATCH_DIST) continue;
+      p.frozen = true; p.timesFrozen++;
+      teleport(r, p, p.x, p.y); // pin them where they were caught
+      note(r, g.players.length > 1 ? `The bot caught ${p.name}! Go and unfreeze them.` : 'The bot caught you!', '#ff5252', 3);
+    }
+  }
+}
+
+// The bot's way to everyone: a breadth-first search over the tiles of every floor, starting where it is. It can't step
+// into the safe zone (unless the zone just landed on top of it: then it can walk out).
+function botSearch(g, b) {
+  const N = COLS * ROWS, grids = g.upper ? [g.grid, g.upper] : [g.grid], F = grids.length;
+  const d = new Int16Array(N * F).fill(-1), par = new Int32Array(N * F).fill(-1), q = new Int32Array(N * F);
+  const t0 = tileOf(b), s = (b.fl || 0) * N + I(t0.x, t0.y), free = g.zoneTiles.has(s);
+  let h = 0, t = 0;
+  d[s] = 0; q[t++] = s;
+  const visit = (ni, c) => { if (d[ni] === -1 && (free || !g.zoneTiles.has(ni))) { d[ni] = d[c] + 1; par[ni] = c; q[t++] = ni; } };
+  while (h < t) {
+    const c = q[h++], f = (c / N) | 0, i = c - f * N, x = i % COLS, y = (i / COLS) | 0;
+    const l = c !== s && g.links.get(i);
+    if (l) { for (const ni of l) visit(f * N + ni, c); continue; } // stepping onto stairs takes you to the other end
+    for (const [dx, dy] of DIRS4) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && ny >= 0 && nx < COLS && ny < ROWS && grids[f][ny][nx] === 0) visit(f * N + I(nx, ny), c);
+    }
+    if (F > 1 && g.ramp[i]) visit((1 - f) * N + i, c); // a staircase in the library: on both floors
+  }
+  return { d, par, s, N };
+}
+// Each tick the bot goes for whoever is closest (by the way it has to walk) and isn't safe; if everyone it could
+// chase is in the safe zone, it waits at the edge of the zone.
+function moveBot(g, b, step) {
+  const { d, par, s, N } = botSearch(g, b);
+  const nodeOf = p => { const t = tileOf(p); return (p.fl || 0) * N + I(t.x, t.y); };
+  let goal = -1, best = Infinity, prey = null;
+  for (const p of g.players) {
+    if (p.frozen || p.escaped || inZone(g, p)) continue;
+    const n = nodeOf(p);
+    if (d[n] >= 0 && d[n] < best) { best = d[n]; goal = n; prey = p; }
+  }
+  if (goal < 0) {
+    if (!g.players.some(p => !p.frozen && !p.escaped)) return;
+    const z = g.zone;
+    let bd = Infinity;
+    for (let n = 0; n < d.length; n++) {
+      if (d[n] < 0 || ((n / N) | 0) !== z.fl) continue;
+      const i = n % N, e = Math.hypot(center(i % COLS) - z.x, center((i / COLS) | 0) - z.y);
+      if (e < bd) { bd = e; goal = n; }
+    }
+    if (goal < 0) return;
+  }
+  let target;
+  if (prey && best <= 1) target = { x: prey.x, y: prey.y }; // right there: straight for them
+  else {
+    const path = [];
+    for (let n = goal; n !== s && n >= 0; n = par[n]) path.push(n);
+    const next = path.reverse().find(n => n % N !== s % N); // (changing floors on a staircase happens by walking along it)
+    if (next === undefined) return;
+    const i = next % N;
+    target = { x: center(i % COLS), y: center((i / COLS) | 0) };
+  }
+  const dx = target.x - b.x, dy = target.y - b.y, l = Math.hypot(dx, dy);
+  if (l < 0.5) return;
+  const k = Math.min(step, l) / l;
+  Sh.moveCircle(Sh.world(g, b.fl), b, dx * k, dy * k, PLAYER_R - 2);
+  b.fl = Sh.nextFloor(g, b.x, b.y, b.fl);
+  b.yaw = Math.atan2(dy, dx);
+}
+
+// everyone out: they win. Everyone left caught (nobody to unfreeze them) or time's up: the bot wins, unless someone got out.
+function checkEscape(r) {
+  const g = r.game, ps = g.players;
+  if (!ps.length) return endGame(r, 'bot', 'Everyone left.');
+  const out = ps.filter(p => p.escaped).length, free = ps.filter(p => !p.escaped && !p.frozen).length;
+  if (out === ps.length) return endGame(r, 'run', out > 1 ? 'Everyone escaped!' : 'You escaped!');
+  if (!free) return endGame(r, out ? 'run' : 'bot', out ? `${out} of ${ps.length} escaped; the bot got the rest.` : ps.length > 1 ? 'The bot caught everyone.' : 'The bot caught you.');
+  if (g.time >= g.roundTime) endGame(r, out ? 'run' : 'bot', `Time's up. ${out ? `${out} of ${ps.length} escaped.` : 'Nobody got out.'}`);
 }
 
 // ---------------------------------------------------------------- hide clay
