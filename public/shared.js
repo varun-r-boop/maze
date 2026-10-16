@@ -42,7 +42,47 @@
     office: ['bubble', 'mug'], mall: ['toy', 'glass', 'bubble', 'cans'], library: ['books', 'bubble', 'mug'],
   };
   // game modes the host can pick
-  S.MODES = [['tag', 'Freeze tag'], ['clay', 'Hide clay']];
+  S.MODES = [['tag', 'Freeze tag'], ['clay', 'Hide clay'], ['fight', 'Arena fights']];
+  // arena fights: 1 v 1 in a knockout bracket. All the numbers that decide how a fight feels are here.
+  S.FIGHT = {
+    HP: 100, ROUND_T: 60, WINS: 2,   // health; seconds per round; rounds needed to win a match (best of 3)
+    INTRO: 3, KO_PAUSE: 3, BRACKET_PAUSE: 4, // seconds: "Round 1… FIGHT!", after a knock-out, showing the bracket
+    punch: { dmg: 7, range: 50, arc: 1.0, wind: 0.07, cd: 0.32, stun: 0.12 },          // range px, arc: half-angle (radians)
+    kick: { dmg: 14, range: 60, arc: 0.85, wind: 0.22, cd: 0.75, stun: 0.3, kb: 260 }, // kb: knock-back speed (px/s)
+    BLOCK: 0.25, BLOCK_SPEED: 0.45,  // blocking: share of the damage you still take, and how fast you can move
+    DODGE: { t: 0.28, speed: 430, cd: 1.0 }, // a roll: nothing hits you while it lasts
+    METER_DEAL: 1.5, METER_TAKE: 1.0, // the special meter (0-100) fills by this much per point of damage dealt / taken
+    // the specials are energy beams: charge up (wind, standing still; a hit stops it), then a beam shoots straight ahead
+    // for `beam` seconds, `len` px long and `w` px wide. Jump over it to dodge it.
+    kamehameha: { dmg: 24, wind: 0.75, beam: 0.5, len: 340, w: 22, cd: 1.5, stun: 0.5, kb: 380 },
+    finalflash: { dmg: 30, wind: 1.0, beam: 0.6, len: 400, w: 34, cd: 1.85, stun: 0.6, kb: 460 },
+    JUMP_T: 0.85, JUMP_H: 1.35, JUMP_PX: 46, // a fighter's jump: seconds in the air, how high (3D units, and px top-down)
+  };
+  // Building your own fighter: a character is a list of shapes dropped onto a skeleton. Each shape belongs to the body
+  // part it was dropped on (so it moves with it), and has where it sits and how it's turned on that part, its size
+  // (s: width, height and depth; u: an overall size on top), its color, how much it blends into the shapes it touches
+  // (k: 0 = a sharp join, 1 = melted smoothly together) and whether it adds or cuts away (m: 1 = subtract).
+  // Hair, eyes and horns are separate pieces (they don't blend). No shapes (parts: null) means just the skeleton.
+  S.FIGHTER_PARTS = {
+    // upper arm (shoulder to elbow), forearm (elbow to hand), thigh (hip to knee), shin (knee to foot), left and right
+    bones: ['torso', 'head', 'hips', 'armL', 'foreL', 'armR', 'foreR', 'legL', 'shinL', 'legR', 'shinR'],
+    types: ['box', 'rbox', 'cylinder', 'sphere', 'cone', 'capsule', 'torus', 'curly', 'longhair', 'eye', 'horn'],
+    max: 90,
+  };
+  S.FIGHT_SPECIALS = ['kamehameha', 'finalflash'];
+  S.SPECIAL_NAMES = { kamehameha: 'Kamehameha', finalflash: 'Final Flash' };
+  S.cleanFighter = f => {
+    const P = S.FIGHTER_PARTS, num = (v, lo, hi, d) => Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d;
+    const v3 = (a, lo, hi, d) => Array.isArray(a) && a.length === 3 ? a.map(v => Math.round(num(v, lo, hi, d) * 1000) / 1000) : [d, d, d];
+    const parts = Array.isArray(f && f.parts) ? f.parts.slice(0, P.max)
+      .filter(q => q && P.bones.includes(q.b) && P.types.includes(q.t))
+      .map(q => ({ b: q.b, t: q.t, p: v3(q.p, -1.5, 1.5, 0), r: v3(q.r, -7, 7, 0), s: v3(q.s, 0.02, 1.2, 0.2), u: Math.round(num(q.u, 0.2, 3, 1) * 100) / 100,
+        c: /^#[0-9a-f]{6}$/i.test(q.c) ? q.c.toLowerCase() : '#cccccc', k: Math.round(num(q.k, 0, 1, 0.3) * 100) / 100, m: q.m ? 1 : 0 })) : null;
+    // proportions: how long the arms, legs and body are (1 = like a person)
+    const pr = f && f.prop && typeof f.prop === 'object' ? f.prop : {};
+    const prop = { arm: Math.round(num(pr.arm, 0.6, 1.6, 1) * 100) / 100, leg: Math.round(num(pr.leg, 0.6, 1.5, 1) * 100) / 100, body: Math.round(num(pr.body, 0.6, 1.4, 1) * 100) / 100 };
+    return { special: S.FIGHT_SPECIALS.includes(f && f.special) ? f.special : 'kamehameha', parts: parts && parts.length ? parts : null, prop };
+  };
   // the colors you can paint your clay sculpture
   S.CLAY_COLORS = ['#e85d5d', '#f28a3b', '#f2c94c', '#7fc65a', '#3fa66b', '#4aa3df', '#3c5fc4', '#9b6ad6', '#f07cb0', '#f4efe2', '#8a5a3a', '#3d3d48'];
   S.COLORS = ['#4fc3f7', '#ffb74d', '#81c784', '#f06292', '#fff176', '#4db6ac', '#ce93d8', '#ff8a65', '#7986cb', '#aed581', '#bcaaa4', '#e0e0e0'];
@@ -102,6 +142,7 @@
     if (name === 'office') return genOffice();
     if (name === 'mall') return genMall();
     if (name === 'library') return genLibrary();
+    if (name === 'arena') return genArena();
     return { name: 'building', grid: S.genMap(), floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns: S.SPAWNS };
   };
 
@@ -601,6 +642,33 @@
     const tag = (list, fl) => list.map(o => ({ ...o, fl }));
     L.library = { items: [...tag(A.items, 0), ...tag(B.items, 1)], rooms: [...tag(A.rooms, 0), ...tag(B.rooms, 1)], doors: [...tag(A.doors, 0), ...tag(B.doors, 1)], windows, entrance, storyH: 1.7 };
     return L;
+  }
+
+  // The fight arena: a plain white room. A fighting area in the middle with a low barrier all round it (fighters can't
+  // get out, spectators can't get in); everyone not fighting walks round the outside and watches.
+  function genArena() {
+    const g = [...Array(ROWS)].map((_, y) => Array(COLS).fill(0).map((_, x) => (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1) ? 1 : 0));
+    const ring = { x0: 12, y0: 9, x1: 28, y1: 21 };
+    const inRing = (x, y) => x >= ring.x0 && x <= ring.x1 && y >= ring.y0 && y <= ring.y1 && // (with the corners cut off)
+      Math.min(x - ring.x0, ring.x1 - x) + Math.min(y - ring.y0, ring.y1 - y) >= 2;
+    for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) {
+      if (inRing(x, y)) continue;
+      let near = false;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (inRing(x + dx, y + dy)) near = true;
+      if (near) g[y][x] = 2; // the railing
+    }
+    const benches = []; // (none: it's a plain room)
+    const spawns = [];
+    for (let x = 13; x <= 27 && spawns.length < 12; x += 2) spawns.push([x, 7]), spawns.push([x, 23]);
+    const fighters = [[15, 15], [25, 15]];
+    // the stands must all join up, and so must the ring
+    for (const [sx, sy, test] of [[spawns[0][0], spawns[0][1], (x, y) => !inRing(x, y)], [fighters[0][0], fighters[0][1], inRing]]) {
+      const d = S.bfs(sx, sy, (x, y) => g[y][x] === 0).d;
+      for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++)
+        if (g[y][x] === 0 && test(x, y) && d[I(x, y)] < 0) throw new Error(`arena layout: tile ${x},${y} can't be reached`);
+    }
+    return { name: 'arena', grid: g, floors: [{ x0: 0, x1: COLS - 1 }], stairs: [], spawns, yaw: Math.PI / 2, bright: true,
+      arena: { ring, benches, fighters } };
   }
 
   function shuffleIn(a) { for (let i = a.length - 1; i > 0; i--) { const j = rand(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; }

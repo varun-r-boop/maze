@@ -69,6 +69,61 @@
     #sculpt .sc-panel { top: auto; bottom: 64px; left: 10px; right: 10px; width: auto; max-height: 40%; }
     #sculpt .sc-hint { display: none; } #sculpt .sc-bottom { justify-content: center; }
   }
+  /* arena fights: the make-your-fighter screen, and the fight buttons on phones */
+  #fbuild { position: fixed; inset: 0; z-index: 6; background: rgba(5,5,12,.92); overflow-y: auto; padding: 16px; box-sizing: border-box; touch-action: auto; }
+  #fbuild.hidden { display: none; }
+  #fbuild select { font: inherit; font-size: 13px; background: #0d0c16; color: #e8e6f0; border: 1px solid #3b3858; border-radius: 6px; padding: 5px; min-width: 0; }
+  .fighter-row { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+  .fighter-row canvas { position: static; width: 120px; height: 137px; background: #1b1a2a; border: 1px solid #2c2a40; border-radius: 10px; }
+  /* the character editor */
+  .ce { display: flex; height: calc(100vh - 32px); max-width: 1400px; margin: auto; border-radius: 12px; overflow: hidden; border: 1px solid #2c3a50; }
+  .ce-side { flex: 0 0 380px; background: #1a2232; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; box-sizing: border-box; }
+  .ce-side h2 { text-align: center; letter-spacing: 2px; margin: 0 0 12px; font-size: 20px; }
+  .ce-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .ce-tabs button { font-size: 11px; font-weight: 800; line-height: 1.15; padding: 5px 8px; background: transparent; border: 2px solid #cfd6e4; color: #cfd6e4; border-radius: 2px; }
+  .ce-tabs button.on { background: #fff; color: #111; }
+  .ce-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; background: #151c29; padding: 8px; border-radius: 6px; margin-bottom: 12px; }
+  .ce-parts button { padding: 7px 4px; font-size: 12px; font-weight: 700; background: #1f2838; border: 1px solid #2c3a50; color: #e8edf6; cursor: grab; touch-action: none; }
+  .ce-parts button:hover { background: #26324a; } .ce-parts button.armed { border-color: #ffd54f; background: #3a3420; }
+  .ce-prop { padding: 6px 12px; font-size: 13px; }
+  .ce-label { font-size: 12px; letter-spacing: 1px; color: #b9c3d6; margin: 0 0 8px; }
+  .ce-shapes { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; background: #151c29; padding: 8px; border-radius: 6px; margin-bottom: 10px; }
+  .ce-shapes button { aspect-ratio: 1; padding: 4px; background: #1f2838; border: 1px solid #2c3a50; border-radius: 4px; color: #e8edf6; cursor: grab; touch-action: none; }
+  .ce-shapes button:hover { background: #26324a; } .ce-shapes button.armed { border-color: #ffd54f; background: #3a3420; }
+  .ce-shapes svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+  .ce-colors { display: flex; flex-wrap: wrap; gap: 6px; background: #151c29; padding: 8px; border-radius: 6px; margin-bottom: 8px; align-items: center; }
+  .ce-colors button { width: 22px; height: 22px; border-radius: 50%; padding: 0; border: 2px solid rgba(0,0,0,.4); }
+  .ce-colors button.on { box-shadow: 0 0 0 2px #fff; }
+  .ce-any { width: 28px; height: 24px; padding: 0; border: none; background: none; }
+  .ce-row { display: flex; align-items: center; justify-content: space-between; background: #151c29; padding: 10px 12px; border-radius: 6px; margin: 0 0 6px; font-size: 15px; color: #e8edf6; letter-spacing: 1px; cursor: pointer; }
+  .ce-row input[type=range] { width: 55%; padding: 0; } .ce-row input[type=checkbox] { width: 24px; height: 24px; accent-color: #43a047; }
+  .ce-sel { margin: 6px 0; } .ce-selname { font-size: 13px; color: #b9c3d6; margin-bottom: 6px; }
+  .ce-gizmo { display: flex; gap: 5px; flex-wrap: wrap; } .ce-gizmo button { flex: 1; padding: 6px; font-size: 13px; } .ce-gizmo button.on { background: #3a2a7a; border-color: #7c4dff; }
+  .ce-tools { display: flex; gap: 6px; margin-top: auto; padding-top: 10px; } .ce-tools button { flex: 1; padding: 6px; font-size: 12px; }
+  .ce-specials button { display: block; width: 100%; text-align: left; margin-bottom: 8px; padding: 10px; }
+  .ce-specials button span { display: block; font-size: 12px; color: #b9b5d6; margin-top: 4px; } .ce-specials button.on { background: #3a2a7a; border-color: #7c4dff; }
+  .ce-foot { display: flex; gap: 8px; margin-top: 12px; } .ce-foot button { flex: 1; }
+  .ce-view { flex: 1; position: relative; min-width: 0; } .ce-view canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  .ce-hint { position: absolute; top: 10px; left: 12px; right: 12px; margin: 0; color: #d7e3f4; font-size: 13px; pointer-events: none; text-shadow: 0 1px 2px #000; }
+  .ce-anim { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
+  .ce-anim button { padding: 6px 12px; font-size: 13px; background: rgba(20,20,35,.8); }
+  .ce-try { width: 100%; margin-top: 10px; padding: 10px; font-weight: 700; background: #2f6f3a; border-color: #43a047; }
+  .ce.practicing .ce-side, .ce.practicing .ce-hint, .ce.practicing .ce-anim { display: none; }
+  /* "Try it out": the practice room's overlay */
+  .pr { position: absolute; inset: 0; pointer-events: none; color: #2a2d33; }
+  .pr > * { pointer-events: auto; }
+  .pr-top { position: absolute; top: 10px; left: 12px; right: 12px; display: flex; gap: 16px; justify-content: space-between; font: 700 12px system-ui; letter-spacing: 1px; pointer-events: none; }
+  .pr-top > div { flex: 0 1 300px; background: rgba(255,255,255,.85); border-radius: 8px; padding: 6px 10px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  .pr-bar { height: 10px; background: #e3e4e8; border-radius: 5px; overflow: hidden; margin-top: 4px; } .pr-bar i { display: block; height: 100%; width: 100%; border-radius: 5px; }
+  .pr-help { position: absolute; bottom: 10px; left: 12px; right: 170px; margin: 0; font: 13px system-ui; color: #4a4f58; background: rgba(255,255,255,.85); padding: 6px 10px; border-radius: 8px; pointer-events: none; }
+  .pr-exit { position: absolute; bottom: 10px; right: 12px; background: #2a2d33; color: #fff; border-color: #2a2d33; font-weight: 700; }
+  .pr-pop { position: absolute; transform: translate(-50%, -50%); font: 900 22px system-ui; text-shadow: 0 2px 0 #fff, 0 0 6px #fff; pointer-events: none; white-space: nowrap; }
+  .pr-pad { position: absolute; right: 12px; bottom: 56px; display: grid; grid-template-columns: repeat(3, 64px); gap: 8px; }
+  .pr-pad button { height: 56px; border-radius: 12px; font-size: 11px; font-weight: 800; background: rgba(42,45,51,.85); color: #fff; touch-action: none; }
+  @media (max-width: 760px) { .ce { flex-direction: column-reverse; height: auto; } .ce-view { height: 55vh; flex: none; } .ce-side { flex: none; } }
+  #fpad { position: fixed; right: 12px; bottom: 90px; z-index: 4; display: none; grid-template-columns: repeat(3, 66px); gap: 8px; }
+  #fpad button { height: 66px; border-radius: 50%; padding: 0; font-size: 11px; font-weight: 800; background: rgba(40,36,70,.75); border: 2px solid rgba(180,170,255,.5); color: #fff; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #fpad button.ready { background: rgba(255,170,40,.85); border-color: #fff; color: #2a1400; }
   /* hide clay: the action button on phones (place / pick up) */
   #act { position: fixed; right: 18px; bottom: 96px; z-index: 4; width: 84px; height: 84px; border-radius: 50%; font-weight: 800; background: #7c4dff; border-color: #b39dff; display: none; }
 </style>
@@ -80,6 +135,8 @@
 <button id="actBtn" hidden>TAG</button>
 <div id="overlay"><div class="panel" id="panel"></div></div>
 <div id="sculpt" class="hidden"></div>
+<div id="fbuild" class="hidden"></div>
+<div id="fpad"><button data-f="block">BLOCK</button><button data-f="special">SPECIAL</button><button data-f="dodge">DODGE</button><button data-f="kick">KICK</button><button data-f="punch" style="grid-column: span 2; border-radius: 33px">PUNCH</button></div>
 <button id="act"></button>
 <script type="importmap">{ "imports": { "three": "/vendor/three/three.module.js", "three/addons/": "/vendor/three-addons/" } }</script>
 <script src="shared.js"></script>

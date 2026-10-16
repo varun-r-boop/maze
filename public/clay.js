@@ -154,7 +154,7 @@ export function clayWalls(add, isWall, cols, rows, wallH, wallColor, skirtColor)
 export function clayifyScene(scene) {
   const done = new Map();
   scene.traverse(o => {
-    if (!o.isMesh || !o.material || Array.isArray(o.material)) return;
+    if (!o.isMesh || !o.material || Array.isArray(o.material) || o.userData.keepMaterial) return; // (fighters keep their own look)
     const m = o.material;
     if (m.type !== 'MeshStandardMaterial' || m.transparent || m.emissive.getHex() !== 0) return;
     if (!done.has(m)) done.set(m, new THREE.MeshPhysicalMaterial({

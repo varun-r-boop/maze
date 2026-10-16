@@ -73,7 +73,7 @@ function handle(c, m) {
       if (r) return;
       const room = { code: genCode(), host: c.id, clients: new Map(), state: 'lobby', game: null, timer: null, map: 'building', roundTime: ROUND_DEFAULT, mode: 'tag' };
       rooms.set(room.code, room);
-      c.char = cleanChar(m.char);
+      c.char = cleanChar(m.char); c.fighter = m.fighter;
       join(c, room, m.name);
       break;
     }
@@ -83,7 +83,7 @@ function handle(c, m) {
       if (!room) return send(c.ws, { t: 'error', msg: 'Room not found. Check the code.' });
       if (room.state === 'play') return send(c.ws, { t: 'error', msg: 'That round is in progress. Try again when it ends.' });
       if (room.clients.size >= MAX_PLAYERS) return send(c.ws, { t: 'error', msg: `That room is full (${MAX_PLAYERS} players max).` });
-      c.char = cleanChar(m.char);
+      c.char = cleanChar(m.char); c.fighter = m.fighter;
       join(c, room, m.name);
       break;
     }
@@ -114,6 +114,9 @@ function handle(c, m) {
     case 'sculpt': if (r && r.state === 'play') onSculpt(r, c, m); break; // hide clay
     case 'place': if (r && r.state === 'play') onPlace(r, c); break;
     case 'find': if (r && r.state === 'play') onFind(r, c); break;
+    case 'fighter': c.fighter = m.f; break; // arena fights: the fighter you made (used from the next round)
+    case 'fx': if (r && r.state === 'play') onFx(r, c, m); break; // ...a punch, kick, dodge or special
+    case 'blk': if (r && r.state === 'play') onBlock(r, c, m); break; // ...block held down or let go
     case 'time': // ...and how long a round lasts
       if (r && r.host === c.id && r.state !== 'play' && ROUND_TIMES.includes(m.time)) { r.roundTime = m.time; broadcastLobby(r); }
       break;
@@ -150,7 +153,7 @@ function leave(c) {
     const g = r.game, p = g.players.find(p => p.id === c.id);
     g.players = g.players.filter(p => p.id !== c.id);
     if (p) note(r, `${p.name} left the round.`, '#ffab91', 3);
-    if (g.mode === 'clay') clayLeft(r, c.id); else checkWin(r);
+    if (g.mode === 'clay') clayLeft(r, c.id); else if (g.mode === 'fight') fightLeft(r, c.id); else checkWin(r);
   }
   broadcastLobby(r);
 }
@@ -159,14 +162,15 @@ function leave(c) {
 function startGame(r) {
   const cl = [...r.clients.values()].sort((a, b) => a.slot - b.slot);
   const n = cl.length, explore = n === 1; // alone: no taggers and no clock, just a map to walk around
-  const level = Sh.genLevel(r.map), grid = level.grid;
+  const fightMode = r.mode === 'fight' && !explore;
+  const level = Sh.genLevel(r.mode === 'fight' ? 'arena' : r.map), grid = level.grid; // (alone with arena fights picked, you explore the arena)
   const links = Sh.stairLinks(level.stairs);
   const reach = Sh.reach(level, level.spawns[0][0], level.spawns[0][1]), dSpawn = reach.d, N = reach.N;
   let maxD = 0; for (const v of dSpawn) if (v > maxD) maxD = v;
 
   // roles: random taggers; runners start at the map's spawn, taggers far away from them (and from each other)
   const clayMode = r.mode === 'clay' && !explore; // (on your own you explore, whichever mode is picked)
-  const taggers = new Set(explore || clayMode ? [] : shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
+  const taggers = new Set(explore || clayMode || fightMode ? [] : shuffleArr(cl.map(c => c.id)).slice(0, Sh.taggerCount(n)));
   const far = [];
   for (const k of [0.6, 0]) { // (anywhere reachable, if no spot is that far away; never on a staircase)
     reach.grids.forEach((gr, fl) => {
@@ -184,31 +188,34 @@ function startGame(r) {
   const now = Date.now();
   let runnerIdx = 0, taggerIdx = 0;
   const g = {
-    mode: clayMode ? 'clay' : 'tag', time: 0, roundTime: r.roundTime, explore, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
+    mode: clayMode ? 'clay' : fightMode ? 'fight' : 'tag', time: 0, roundTime: r.roundTime, explore, grid, floors: level.floors, stairs: level.stairs, links, upper: level.upper || null, ramps: level.ramps || [],
     stairAt: new Map(level.stairs.map(s => [I(s.x, s.y), s])),
     players: cl.map(c => {
       const it = taggers.has(c.id), spot = it ? taggerSpots[taggerIdx++] : { x: level.spawns[runnerIdx][0], y: level.spawns[runnerIdx++][1] };
       return {
-        id: c.id, slot: c.slot, name: c.name, char: c.char, role: clayMode ? 'clay' : it ? 'it' : 'run', score: 0, finds: 0, target: null,
+        id: c.id, slot: c.slot, name: c.name, char: c.char, role: clayMode ? 'clay' : fightMode ? 'fan' : it ? 'it' : 'run', score: 0, finds: 0, target: null,
+        fighter: Sh.cleanFighter(c.fighter, c.slot), hp: Sh.FIGHT.HP, meter: 0, act: null, block: false, mwins: 0,
         x: center(spot.x), y: center(spot.y), fl: spot.fl || 0, yaw: level.yaw ?? Sh.START_YAW, jumps: 0, airUntil: 0,
         frozen: false, immune: 0, nextAct: 0, tags: 0, saves: 0, timesFrozen: 0, tpSeq: 0, lastPosT: now,
       };
     }),
   };
 
-  g.traps = clayMode ? [] : placeTraps(level, reach);
+  g.traps = clayMode || level.name === 'arena' ? [] : placeTraps(level, reach);
+  if (fightMode) Object.assign(g, { arena: level.arena, spawns: level.spawns, beams: [] });
   if (clayMode) Object.assign(g, { phase: 'sculpt', phaseEnd: SCULPT_TIME + 3, sculpts: new Map(), objs: new Map(), spawns: level.spawns }); // (3s for the last sculptures to arrive)
 
   clearInterval(r.timer);
   r.game = g; r.state = 'play'; r.last = now;
-  const roster = g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, char: p.char, role: p.role, x: p.x, y: p.y, fl: p.fl }));
+  const roster = g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, char: p.char, role: p.role, x: p.x, y: p.y, fl: p.fl, fighter: p.fighter }));
   const deco = { flights: level.flights || [], rooms: level.rooms || [], furniture: level.furniture || [], doors: level.doors || [], forest: level.forest || null, office: level.office || null, mall: level.mall || null, bright: !!level.bright,
-    upper: level.upper || null, ramps: level.ramps || [], library: level.library || null };
+    upper: level.upper || null, ramps: level.ramps || [], library: level.library || null, arena: level.arena || null };
   for (const c of cl) send(c.ws, { t: 'start', you: c.id, grid, map: level.name, yaw: level.yaw ?? Sh.START_YAW, floors: level.floors, stairs: level.stairs, ...deco, players: roster, roundTime: g.roundTime, hold: HOLD, mode: g.mode, phase: g.phase, sculptTime: SCULPT_TIME, traps: g.traps.map(({ id, x, y, fl, kind }) => ({ id, x, y, fl, kind })), explore });
   broadcastLobby(r);
   const its = g.players.filter(p => p.role === 'it'), names = its.map(p => p.name).join(' and ');
   if (explore) tell(r, g.players[0], 'Exploring on your own: no taggers, no clock. Invite friends to play.', '#69f0ae', 5);
   else if (clayMode) note(r, 'Sculpt your clay! Then you will hide it, and hunt for someone else\'s.', '#ffe9a8', 5);
+  else if (fightMode) { note(r, 'Arena fights! Everyone is in the bracket: two fight while the rest watch from the stands.', '#ffd54f', 5); fightBegin(r); }
   else for (const p of g.players) {
     if (p.role === 'it') tell(r, p, `You're IT${its.length > 1 ? ` (with ${its.filter(o => o !== p).map(o => o.name).join(', ')})` : ''}! Catch the runners and tag them.`, '#ff5252', 5);
     else tell(r, p, `${names} ${its.length > 1 ? 'are' : 'is'} IT! Run, and unfreeze your friends.`, '#69f0ae', 5);
@@ -227,13 +234,16 @@ function onPos(r, c, m) {
   // a jump (the client counts them): in the air for a moment, so you don't set off noise traps. Not while frozen.
   const now0 = Date.now();
   if (Number.isInteger(m.j) && m.j > p.jumps) {
-    if (!p.frozen && now0 >= p.airUntil + JUMP_REST * 1000 - 100) p.airUntil = now0 + JUMP_T * 1000;
+    if (!p.frozen && now0 >= p.airUntil + JUMP_REST * 1000 - 100) p.airUntil = now0 + (g.mode === 'fight' ? FT.JUMP_T : JUMP_T) * 1000; // (fighters jump high)
     p.jumps = m.j;
   }
-  if (p.frozen || (p.role === 'it' && g.time < HOLD) || g.phase === 'sculpt') { if (Math.hypot(m.x - p.x, m.y - p.y) > 2) teleport(r, p, p.x, p.y); return; }
+  const fighting = g.mode === 'fight' && g.match && (p.id === g.match.a || p.id === g.match.b);
+  const pinned = fighting && (g.fphase !== 'fight' || (g.time < p.stunUntil && now0 > p.kbUntil));
+  if (p.frozen || (p.role === 'it' && g.time < HOLD) || g.phase === 'sculpt' || pinned) { if (Math.hypot(m.x - p.x, m.y - p.y) > 2) teleport(r, p, p.x, p.y); return; }
   const x = Number(m.x), y = Number(m.y), now = Date.now();
   const dt = (now - p.lastPosT) / 1000;
-  const speed = PLAYER_SPEED * (p.role === 'it' ? TAGGER_SPEED : 1);
+  let speed = PLAYER_SPEED * (p.role === 'it' ? TAGGER_SPEED : 1);
+  if (fighting) speed = (now < p.boostUntil ? 600 : PLAYER_SPEED * (p.block ? Sh.FIGHT.BLOCK_SPEED : 1)) + (now < p.kbUntil ? 420 : 0);
   const allowed = speed * Math.max(dt, 0.05) * 1.6 + 10;
   const fl = Number.isFinite(x) && Number.isFinite(y) ? Sh.nextFloor(g, x, y, p.fl) : p.fl; // walking up or down a staircase
   if (!Number.isFinite(x) || !Number.isFinite(y) || Math.hypot(x - p.x, y - p.y) > allowed || Sh.collides(Sh.world(g, fl), x, y, PLAYER_R - 3)) {
@@ -252,7 +262,7 @@ function teleport(r, p, x, y, a) { // `a`: face this way afterwards (used by sta
 // someone: a tagger freezes the nearest free runner within reach; a free runner unfreezes the nearest frozen one.
 function onAct(r, c) {
   const g = r.game, p = g.players.find(p => p.id === c.id);
-  if (!p || p.frozen || g.time < p.nextAct) return;
+  if (g.mode !== 'tag' || !p || p.frozen || g.time < p.nextAct) return;
   p.nextAct = g.time + ACT_COOLDOWN; // no machine-gun clicking
   const near = (want, reach) => g.players.filter(o => o !== p && want(o) && sameFloor(g, o, p) && dist(o, p) <= reach)
     .sort((a, b) => dist(a, p) - dist(b, p))[0];
@@ -295,6 +305,7 @@ function tick(r) {
   }
 
   if (g.mode === 'clay') { clayTick(r, dt); if (r.state === 'play') sendSnapshots(r); return; }
+  if (g.mode === 'fight') { fightTick(r, dt); if (r.state === 'play') sendSnapshots(r); return; }
   const runners = g.players.filter(p => p.role === 'run');
   if (!g.explore) stepOnTraps(r, runners, dt);
   checkWin(r);
@@ -374,8 +385,14 @@ function sendSnapshots(r) {
     players: g.players.map(p => ({
       id: p.id, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.yaw * 100) / 100,
       fz: p.frozen, imm: p.immune > 0, tags: p.tags, f: p.fl, j: p.jumps, sc: Math.floor(p.score),
+      ...(g.mode === 'fight' ? { hp: p.hp, mt: Math.floor(p.meter), ak: p.act ? p.act.k : null, sd: p.act ? p.act.side : null, at: p.act ? Math.round((g.time - p.act.t0) * 100) / 100 : 0,
+        bk: p.block, st: g.time < p.stunUntil, dg: g.time < p.dodgeUntil } : {}),
     })),
   };
+  if (g.mode === 'fight') Object.assign(shared, {
+    fm: g.match ? { a: g.match.a, b: g.match.b, w: g.match.wins, rn: g.match.round } : null, fp: g.fphase, left: Math.max(0, Math.round((g.fUntil - g.time) * 10) / 10),
+    beams: g.beams.map(b => ({ x: Math.round(b.x), y: Math.round(b.y), a: Math.round(b.a * 1000) / 1000, k: b.k, t: Math.round((g.time - b.t0) * 100) / 100 })),
+  });
   if (g.mode === 'clay') Object.assign(shared, { ph: g.phase, left: Math.max(0, Math.round((g.phaseEnd - g.time) * 10) / 10) });
   for (const p of g.players) {
     const c = r.clients.get(p.id);
@@ -492,6 +509,188 @@ function endClay(r, reason) {
     t: 'end', mode: 'clay', winner: g.players.filter(p => p.score === best).map(p => p.id), reason, time: g.time,
     stats: g.players.map(p => { const o = g.objs.get(p.id), by = o && o.by && clayOwner(g, o.by); return { id: p.id, name: p.name, slot: p.slot, score: Math.floor(p.score), finds: p.finds, hidden: Math.round(o ? o.hidden : 0), foundBy: by ? by.name : null }; }),
     objs: [...g.objs.entries()].map(([id, o]) => ({ id, x: o.x, y: o.y, fl: o.fl })),
+  });
+  broadcastLobby(r);
+}
+
+// ---------------------------------------------------------------- arena fights
+// Everyone goes into a knockout bracket (in a random order; with an odd number, someone gets a bye). One match at
+// a time: the two fighters go into the ring, everyone else watches from the stands. Best of 3 rounds; a round ends
+// on a knock-out or when time runs out (then the one with more health wins it). The winner goes on to the next round
+// of the bracket, until one champion is left.
+const FT = Sh.FIGHT;
+const fighterOf = (g, id) => g.players.find(p => p.id === id);
+const pairUp = ids => { const out = []; for (let i = 0; i < ids.length; i += 2) out.push({ a: ids[i], b: ids[i + 1] ?? null, winner: ids[i + 1] == null ? ids[i] : null, wins: [0, 0], round: 0 }); return out; };
+function sendBracket(r) {
+  const g = r.game;
+  broadcast(r, { t: 'bracket', rounds: g.bracket.map(rd => rd.map(m => ({ a: m.a, b: m.b, w: m.winner, s: m.wins }))) });
+}
+function fightBegin(r) {
+  const g = r.game;
+  g.bracket = [pairUp(shuffleArr(g.players.map(p => p.id)))]; g.match = null; g.beams = [];
+  g.fphase = 'bracket'; g.fUntil = g.time + FT.BRACKET_PAUSE;
+  sendBracket(r);
+}
+// the next match in this round of the bracket; or, when it's done, the next round; or the champion
+function nextMatch(r) {
+  const g = r.game, rd = g.bracket[g.bracket.length - 1], m = rd.find(m => m.winner == null);
+  if (m) {
+    const A = fighterOf(g, m.a), B = fighterOf(g, m.b);
+    if (!A || !B) { m.winner = A ? m.a : B ? m.b : -1; sendBracket(r); return nextMatch(r); } // someone left: the other goes through
+    return startMatch(r, m);
+  }
+  const winners = rd.map(m => m.winner).filter(id => id !== -1 && fighterOf(g, id));
+  if (winners.length <= 1) return endFight(r, winners[0] ?? null);
+  g.bracket.push(pairUp(shuffleArr(winners)));
+  g.fphase = 'bracket'; g.fUntil = g.time + FT.BRACKET_PAUSE;
+  sendBracket(r);
+  note(r, winners.length === 2 ? 'The final!' : `Round ${g.bracket.length} of the bracket`, '#ffd54f', 3);
+}
+function startMatch(r, m) {
+  const g = r.game, A = fighterOf(g, m.a), B = fighterOf(g, m.b);
+  g.match = m; m.wins = [0, 0]; m.round = 0;
+  for (const p of [A, B]) { p.meter = 0; p.role = 'fighter'; }
+  note(r, `${A.name} vs ${B.name}!`, '#ffd54f', 3);
+  startRound(r);
+}
+function startRound(r) {
+  const g = r.game, m = g.match, sp = g.arena.fighters;
+  m.round++;
+  [m.a, m.b].forEach((id, i) => {
+    const p = fighterOf(g, id);
+    Object.assign(p, { hp: FT.HP, act: null, block: false, stunUntil: 0, dodgeUntil: 0, dodgeCd: 0, kbUntil: 0, boostUntil: 0, fl: 0, yaw: i ? Math.PI : 0 });
+    teleport(r, p, center(sp[i][0]), center(sp[i][1]), p.yaw);
+  });
+  g.beams = [];
+  g.fphase = 'intro'; g.fUntil = g.time + FT.INTRO;
+  broadcast(r, { t: 'fround', n: m.round });
+}
+// a hit lands: dodging makes it miss; blocking (facing the hit) takes a quarter of it; otherwise a stun and a shove
+function landHit(r, att, def, kind) {
+  const g = r.game, spec = FT[kind], now = Date.now();
+  if (g.time < def.dodgeUntil) return broadcast(r, { t: 'hit', by: att.id, to: def.id, kind, miss: true, x: Math.round(def.x), y: Math.round(def.y) });
+  const toAtt = Math.atan2(att.y - def.y, att.x - def.x), facing = Math.abs(Math.atan2(Math.sin(toAtt - def.yaw), Math.cos(toAtt - def.yaw))) < 1.4;
+  const blocked = def.block && facing, dmg = Math.round(spec.dmg * (blocked ? FT.BLOCK : 1));
+  def.hp = Math.max(0, def.hp - dmg);
+  att.meter = Math.min(100, att.meter + dmg * FT.METER_DEAL); def.meter = Math.min(100, def.meter + dmg * FT.METER_TAKE);
+  if (!blocked) {
+    if (spec.stun) { def.stunUntil = g.time + spec.stun; def.act = null; }
+    if (spec.kb) {
+      const dx = def.x - att.x, dy = def.y - att.y, l = Math.hypot(dx, dy) || 1;
+      def.kbUntil = now + 320;
+      const c = r.clients.get(def.id);
+      if (c) send(c.ws, { t: 'kb', vx: dx / l * spec.kb, vy: dy / l * spec.kb, dur: 0.25 });
+    }
+  }
+  broadcast(r, { t: 'hit', by: att.id, to: def.id, kind, dmg, blocked, hp: def.hp, x: Math.round(def.x), y: Math.round(def.y) });
+}
+const inReach = (p, o, range, arc) => {
+  if (dist(p, o) > range) return false;
+  const a = Math.atan2(o.y - p.y, o.x - p.x);
+  return Math.abs(Math.atan2(Math.sin(a - p.yaw), Math.cos(a - p.yaw))) <= arc;
+};
+function onFx(r, c, m) {
+  const g = r.game, p = g.mode === 'fight' && g.match && fighterOf(g, c.id);
+  if (!p || (p.id !== g.match.a && p.id !== g.match.b) || g.fphase !== 'fight' || g.time < p.stunUntil) return;
+  const k = m.a;
+  if (k === 'dodge') {
+    if (g.time < p.dodgeCd || p.act) return;
+    p.dodgeUntil = g.time + FT.DODGE.t; p.dodgeCd = g.time + FT.DODGE.cd; p.boostUntil = Date.now() + FT.DODGE.t * 1000 + 150;
+    return;
+  }
+  if (p.act || p.block) return;
+  if (k === 'punch') { p.jab = p.jab === 'L' ? 'R' : 'L'; p.act = { k, t0: g.time, side: p.jab }; } // (jabs: left, right, left...)
+  else if (k === 'kick') p.act = { k, t0: g.time };
+  else if (k === 'special' && p.meter >= 100) {
+    p.meter = 0; p.act = { k: p.fighter.special, t0: g.time };
+    broadcast(r, { t: 'special', by: p.id, kind: p.act.k });
+  }
+}
+function onBlock(r, c, m) {
+  const g = r.game, p = g.mode === 'fight' && g.match && fighterOf(g, c.id);
+  if (p && (p.id === g.match.a || p.id === g.match.b)) p.block = !!m.on;
+}
+function fightTick(r, dt) {
+  const g = r.game;
+  if (g.fphase === 'bracket') { if (g.time >= g.fUntil) nextMatch(r); return; }
+  const m = g.match;
+  if (!m) return;
+  const A = fighterOf(g, m.a), B = fighterOf(g, m.b);
+  if (g.fphase === 'intro') { if (g.time >= g.fUntil) { g.fphase = 'fight'; g.fUntil = g.time + FT.ROUND_T; broadcast(r, { t: 'fight' }); } return; }
+  if (g.fphase === 'ko') { if (g.time >= g.fUntil) afterRound(r); return; }
+  // the moves: each lands after its wind-up
+  const now = Date.now();
+  for (const [p, o] of [[A, B], [B, A]]) {
+    const a = p.act;
+    if (!a) continue;
+    const spec = FT[a.k];
+    if (!a.done && g.time >= a.t0 + spec.wind) {
+      a.done = true;
+      if ((a.k === 'punch' || a.k === 'kick') && inReach(p, o, spec.range, spec.arc)) landHit(r, p, o, a.k);
+      else if (spec.beam) g.beams.push({ x: p.x + Math.cos(p.yaw) * 16, y: p.y + Math.sin(p.yaw) * 16, a: p.yaw, k: a.k, o: p.id, t0: g.time, hit: false }); // (fired after the charge)
+    }
+    if (g.time >= a.t0 + Math.max(spec.cd, spec.wind + 0.05)) p.act = null;
+  }
+  // beams: straight out from the hands for a moment; they hit once, anyone in them who isn't in the air (jump them!)
+  g.beams = g.beams.filter(b => {
+    const spec = FT[b.k];
+    if (g.time > b.t0 + spec.beam) return false;
+    const owner = fighterOf(g, b.o), o = owner === A ? B : A;
+    if (owner && o && !b.hit && now >= o.airUntil) {
+      const dx = o.x - b.x, dy = o.y - b.y, along = dx * Math.cos(b.a) + dy * Math.sin(b.a), across = Math.abs(dy * Math.cos(b.a) - dx * Math.sin(b.a));
+      if (along > -12 && along < spec.len * Math.min(1, (g.time - b.t0) / 0.12) && across < spec.w + 10) { b.hit = true; landHit(r, owner, o, b.k); }
+    }
+    return true;
+  });
+  if (A.hp <= 0 || B.hp <= 0 || g.time >= g.fUntil) roundOver(r);
+}
+function roundOver(r) {
+  const g = r.game, m = g.match, A = fighterOf(g, m.a), B = fighterOf(g, m.b);
+  const w = A.hp > B.hp ? A : B.hp > A.hp ? B : null, ko = A.hp <= 0 || B.hp <= 0;
+  if (w) m.wins[w === A ? 0 : 1]++;
+  g.fphase = 'ko'; g.fUntil = g.time + FT.KO_PAUSE; g.beams = [];
+  for (const p of [A, B]) { p.act = null; p.block = false; }
+  broadcast(r, { t: 'ko', w: w ? w.id : null, ko });
+  note(r, !w ? 'A draw! Nobody takes this round.' : ko ? `K.O.! ${w.name} takes round ${m.round}` : `Time! ${w.name} takes round ${m.round}`, '#ffd54f', 2.5);
+}
+function afterRound(r) {
+  const g = r.game, m = g.match;
+  let wi = m.wins.findIndex(w => w >= FT.WINS);
+  if (wi < 0 && m.round >= 5) wi = m.wins[0] === m.wins[1] ? rand(2) : m.wins[0] > m.wins[1] ? 0 : 1; // (too many draws: decide it)
+  if (wi < 0) return startRound(r);
+  endMatch(r, wi ? m.b : m.a);
+}
+// the match is over: both go back to the stands, the winner goes through
+function endMatch(r, winnerId) {
+  const g = r.game, m = g.match;
+  m.winner = winnerId;
+  const w = fighterOf(g, winnerId);
+  if (w) { w.mwins++; note(r, `${w.name} wins the match!`, '#69f0ae', 3); }
+  [m.a, m.b].forEach((id, i) => {
+    const p = fighterOf(g, id);
+    if (!p) return;
+    const s = g.spawns[(g.players.indexOf(p) + i) % g.spawns.length];
+    Object.assign(p, { role: 'fan', act: null, block: false, hp: FT.HP }); teleport(r, p, center(s[0]), center(s[1]), Math.PI / 2);
+  });
+  g.match = null; g.beams = [];
+  g.fphase = 'bracket'; g.fUntil = g.time + FT.BRACKET_PAUSE;
+  sendBracket(r);
+}
+function fightLeft(r, id) {
+  const g = r.game;
+  if (g.players.length < 2) return endFight(r, g.players[0] ? g.players[0].id : null);
+  if (g.match && (g.match.a === id || g.match.b === id)) endMatch(r, g.match.a === id ? g.match.b : g.match.a); // a walk-over
+  else sendBracket(r);
+}
+function endFight(r, champion) {
+  clearInterval(r.timer); r.timer = null;
+  const g = r.game;
+  r.state = 'ended';
+  sendSnapshots(r);
+  broadcast(r, {
+    t: 'end', mode: 'fight', champion, time: g.time, reason: champion != null ? '' : 'Nobody left to fight.',
+    rounds: g.bracket.map(rd => rd.map(m => ({ a: m.a, b: m.b, w: m.winner, s: m.wins }))),
+    stats: g.players.map(p => ({ id: p.id, name: p.name, slot: p.slot, wins: p.mwins, fighter: p.fighter })),
   });
   broadcastLobby(r);
 }

@@ -8,6 +8,8 @@ import { buildMall, updateMall } from './mall3d.js';
 import { buildLibrary, updateLibrary } from './library3d.js';
 import { clay, rbox, blob, clayifyScene, createClayFX, resetClay } from './clay.js';
 import { makeSculpture } from './clayobj.js';
+import { makeFighter, poseFighter, makeBeam, setBeam } from './fighter3d.js';
+import { buildArena, updateArena } from './arena3d.js';
 const SCULPTURE = 0.5; // hide clay: how big a sculpture is in the world (its longest side, in tiles)
 
 const Sh = window.Shared;
@@ -200,12 +202,13 @@ export function createView3D(canvas) {
     scene.add(new THREE.AmbientLight('#8a86b8', 0.22));
 
     // the apartment has its own look (rooms, furniture, doors, real stairs); otherwise the default building
-    let apt = null, forest = null, mall = null, library = null;
+    let apt = null, forest = null, mall = null, library = null, arena = null;
     if (G.map === 'apartment') apt = buildApartment(scene, G, WALL_H);
     else if (G.map === 'forest') forest = buildForest(scene, G, WALL_H);
     else if (G.map === 'office') buildOffice(scene, G, WALL_H);
     else if (G.map === 'mall') mall = buildMall(scene, G, WALL_H);
     else if (G.map === 'library') library = buildLibrary(scene, G, WALL_H);
+    else if (G.map === 'arena') arena = buildArena(scene, G, WALL_H);
     else {
       // floor, ceiling and walls
       const floorTex = canvasTex(128, (x, n) => {
@@ -277,7 +280,7 @@ export function createView3D(canvas) {
     // (a frozen teammate's says so), so you can find them.
     const players = new Map();
     for (const [id, p] of G.players) {
-      const model = makePerson(p.char, COLORS[p.slot], p.slot);
+      const model = G.arena && p.fighter ? makeFighter(p.fighter, p.slot) : makePerson(p.char, COLORS[p.slot], p.slot); // (in the arena: the fighter they made)
       const bits = addTagBits(model, p.role);
       const tag = nameSprite(p.role === 'it' ? `${p.name} · IT` : p.name, p.role === 'it' ? '#ff6b6b' : COLORS[p.slot]);
       const tagFz = nameSprite(`❄ ${p.name} · frozen`, '#9fe3ff');
@@ -291,11 +294,13 @@ export function createView3D(canvas) {
     const pings = [];
     for (let i = 0; i < 6; i++) { const p = pingSprite(); scene.add(p); pings.push(p); }
 
-    S = { G, apt, forest, mall, library, players, spot, near, traps, pings, SH, sculptures: new Map() };
+    // arena fights: the special beams (two at most at once)
+    const beams = [makeBeam(), makeBeam()]; beams.forEach(b => scene.add(b));
+    S = { G, apt, forest, mall, library, arena, players, spot, near, traps, pings, SH, beams, sculptures: new Map() };
 
     // the office and the mall are all clay (the people already are): a softer color grade,
     // and (on computers) soft shadows wherever things touch. It also needs a longer view, to see outside.
-    const clayMap = G.map === 'office' || G.map === 'mall' || G.map === 'library';
+    const clayMap = G.map === 'office' || G.map === 'mall' || G.map === 'library'; // (the arena is a plain white room, not clay)
     if (clayMap) clayifyScene(scene);
     renderer.toneMapping = clayMap ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
     renderer.toneMappingExposure = 0.95;
@@ -329,9 +334,15 @@ export function createView3D(canvas) {
       camera.lookAt(vx + Math.cos(view.a) * Math.cos(f.pitch), eye + vh + Math.sin(f.pitch), vz + Math.sin(view.a) * Math.cos(f.pitch));
     } else {
       back = Math.max(0.35, Math.min(1.9, f.backRoom / TILE - 0.25));
-      // with a wall right behind you the camera rises a little to look over your head
-      camera.position.set(vx - dir.x * back, 1.05 + (1.9 - back) * 0.17 + vh, vz - dir.z * back);
-      camera.lookAt(vx + dir.x * 1.2, 0.5 + vh + Math.sin(f.pitch) * 1.2, vz + dir.z * 1.2);
+      if (f.fightCam) { // fighting: further back and higher, looking down past you at your opponent
+        back = 2.4;
+        camera.position.set(vx - dir.x * back, 1.75 + vh, vz - dir.z * back);
+        camera.lookAt(vx + dir.x * 1.6, 0.45 + vh, vz + dir.z * 1.6);
+      } else {
+        // with a wall right behind you the camera rises a little to look over your head
+        camera.position.set(vx - dir.x * back, 1.05 + (1.9 - back) * 0.17 + vh, vz - dir.z * back);
+        camera.lookAt(vx + dir.x * 1.2, 0.5 + vh + Math.sin(f.pitch) * 1.2, vz + dir.z * 1.2);
+      }
     }
 
     // players
@@ -353,10 +364,13 @@ export function createView3D(canvas) {
         o.model.traverse(c => { if (c.isMesh && !c.userData.noFade) { c.material.transparent = fade < 1; c.material.opacity = fade; } });
       }
       const { body, legs, arms } = o.model.userData;
-      arms[0].rotation.z = -Math.sin(p.walk) * 0.5; arms[1].rotation.z = Math.sin(p.walk) * 0.5;
-      body.position.y = p.walk ? Math.abs(Math.cos(p.walk)) * 0.04 : 0;
-      body.rotation.x = p.walk ? Math.sin(p.walk * 0.5) * 0.06 : 0;
-      legs[0].rotation.z = Math.sin(p.walk) * 0.6; legs[1].rotation.z = -Math.sin(p.walk) * 0.6;
+      if (o.model.userData.fighter) poseFighter(o.model, p.pose, p.walk); // (a fighter: punches, kicks, blocks...)
+      else {
+        arms[0].rotation.z = -Math.sin(p.walk) * 0.5; arms[1].rotation.z = Math.sin(p.walk) * 0.5;
+        body.position.y = p.walk ? Math.abs(Math.cos(p.walk)) * 0.04 : 0;
+        body.rotation.x = p.walk ? Math.sin(p.walk * 0.5) * 0.06 : 0;
+        legs[0].rotation.z = Math.sin(p.walk) * 0.6; legs[1].rotation.z = -Math.sin(p.walk) * 0.6;
+      }
       // tag bits: the tagger's ring pulses; ice while frozen
       o.ring.material.opacity = 0.55 + 0.45 * Math.sin(t * 6);
       o.ice.visible = p.fz;
@@ -391,6 +405,12 @@ export function createView3D(canvas) {
     if (S.forest) updateForest(S.forest, f, t, camera);
     if (S.mall) updateMall(S.mall, t);
     if (S.library) updateLibrary(S.library, t);
+    if (S.arena) updateArena(S.arena, t, f.excite || 0);
+    S.beams.forEach((g, i) => {
+      const b = f.beams && f.beams[i];
+      if (!b) { g.visible = false; return; }
+      g.position.set(b.x / TILE, 0.75, b.y / TILE); g.rotation.y = -b.a; setBeam(g, b.k, b.len / TILE, b.age, b.life, t);
+    });
     if (fx) fx.render(); else renderer.render(scene, camera);
   }
 

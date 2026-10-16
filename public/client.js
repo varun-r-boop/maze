@@ -4,6 +4,11 @@ import { drawOfficeMap, drawOfficeLamps } from './office2d.js';
 import { drawMallMap, drawMallGlow } from './mall2d.js';
 import { drawLibraryMap, drawLibraryGlow } from './library2d.js';
 import { drawDefined } from './outline2d.js';
+import { drawArenaMap } from './arena2d.js';
+import { loadFighter, saveFighter } from './fighter.js';
+// fighters' pictures (rendered from their 3D models; loaded only when needed, as it needs Three.js)
+let spriteLib = null;
+const loadSprites = () => spriteLib || (spriteLib = import('./fightersprite.js'));
 const Sh = window.Shared;
 const { TILE, COLS, ROWS, PLAYER_R, PLAYER_SPEED, MAX_PLAYERS, MIN_PLAYERS, TAGGER_SPEED, ROUND_TIMES, JUMP_T, JUMP_REST } = Sh.C;
 const { center, dist } = Sh;
@@ -15,8 +20,11 @@ const R_NEAR = TILE * 2.2, R_FAR = TILE * 7.5, CONE = 0.5; // CONE = half-angle 
 const R_BRIGHT = TILE * 9;
 const isTouch = matchMedia('(pointer: coarse)').matches;
 // a jump: how high you go (0..1) this far into it; drawn this many pixels up in top-down, and this high (in tiles) in 3D
-const jumpK = t => t >= 0 ? Math.sin(Math.PI * Math.min(1, t / JUMP_T)) : 0;
-const JUMP_PX = 18, JUMP_3D = 0.42;
+// (fighters jump higher, and stay up longer)
+const fightJump = () => typeof G !== 'undefined' && G && G.mode === 'fight';
+const jumpLen = () => fightJump() ? Sh.FIGHT.JUMP_T : JUMP_T;
+const jumpK = t => t >= 0 ? Math.sin(Math.PI * Math.min(1, t / jumpLen())) : 0;
+const jumpPx = () => fightJump() ? Sh.FIGHT.JUMP_PX : 18, jump3d = () => fightJump() ? Sh.FIGHT.JUMP_H : 0.42;
 
 // ---------------------------------------------------------------- canvases
 const cvs = document.getElementById('c'), ctx = cvs.getContext('2d');
@@ -113,7 +121,7 @@ function onMsg(m) {
       room.host = m.host; room.players = m.players; room.state = m.state; room.map = m.map || 'building'; room.roundTime = m.roundTime || room.roundTime; room.mode = m.mode || 'tag';
       if (m.state === 'lobby') {
         if (document.pointerLockElement) document.exitPointerLock();
-        ui = 'lobby'; G = null; exploreExit.hidden = true; actBtn.hidden = true; renderLobby();
+        ui = 'lobby'; G = null; exploreExit.hidden = true; actBtn.hidden = true; fpad.style.display = 'none'; renderLobby();
       }
       else if (ui === 'ended') renderEnd();
       break;
@@ -135,10 +143,18 @@ function onMsg(m) {
     case 'target': if (G) onTarget(m); break;
     case 'found': if (G) onFound(m); break;
     case 'gone': if (G) G.objs.delete(m.id); break;
+    // arena fights
+    case 'bracket': if (G) G.bracket = m.rounds; break;
+    case 'fround': if (G) { banner(`ROUND ${m.n}`, '#ffd54f', 1.6); } break;
+    case 'fight': if (G) { banner('FIGHT!', '#ff5252', 1); playFight('bell'); } break;
+    case 'hit': if (G) onHit(m); break;
+    case 'special': if (G) { playFight(m.kind); if (m.by !== myId) addMsg(`${(G.players.get(m.by) || { name: '?' }).name}: ${(Sh.SPECIAL_NAMES[m.kind] || '').toUpperCase()}!`, '#ffb74d', 1.5); } break;
+    case 'ko': if (G) { banner(m.ko ? 'K.O.!' : m.w ? 'TIME!' : 'DRAW', '#ffd54f', 2.2); playFight('bell'); } break;
+    case 'kb': if (G) G.kb = { vx: m.vx, vy: m.vy, until: performance.now() + m.dur * 1000 }; break;
     case 'end':
       if (document.pointerLockElement) document.exitPointerLock();
       chase.pause(); chase.currentTime = 0;
-      closeSculpt(); clayBtn.style.display = 'none'; actBtn.hidden = true;
+      closeSculpt(); clayBtn.style.display = 'none'; actBtn.hidden = true; fpad.style.display = 'none';
       if (G) { G.result = m; ui = 'ended'; renderEnd(); }
       break;
   }
@@ -171,17 +187,18 @@ function renderHome() {
       <li><b>Top-down, PC:</b> move with WASD or the arrow keys; your headlight points the way you walk. <b>Phone:</b> drag anywhere to move.</li>
       <li><b>First / third person, PC:</b> click the game to look around with the mouse (Esc frees it). W/S walk, A/D step sideways, ←/→ or Q/E turn. <b>Phone:</b> drag up/down to walk, left/right to turn.</li>
       <li><b>Hide clay</b> (a second game mode): everyone sculpts something out of clay, then hides it somewhere on the map. Then everyone is given someone else's sculpture to find. Find it fast for points; your own sculpture earns points for every second it stays hidden. <b>F</b> (or a left-click) hides your sculpture and picks up the one you're hunting.</li>
+      <li><b>Arena fights</b> (a third mode): make your own fighter, then everyone goes into a knockout bracket of 1 v 1 fights, best of 3 rounds. <b>Punch</b> (left and right jabs, in turn): left-click or J. <b>Hook kick</b>: right-click or K. <b>Block</b>: hold Shift. <b>Dodge</b>: C. <b>Special</b> (when its meter is full): F, a Kamehameha or a Final Flash beam. <b>Jump</b> high with Space: you can jump over a beam.</li>
       <li>Press <b>Space</b> to jump (or double-tap on a phone). Jump over a noise trap and it stays quiet.</li>
       <li>Press <b>V</b> during a game to switch views, and <b>M</b> to turn the music on or off.</li>
     </ul></details>`;
   bindViewPicker(); bindMusicButton(); bindCharPicker();
   const nameEl = document.getElementById('name'), codeEl = document.getElementById('code');
   const name = () => { const n = nameEl.value.trim(); store.set('kb-name', n); return n; };
-  document.getElementById('host').onclick = () => { ensureAudio(); homeError = ''; send({ t: 'create', name: name(), char: myChar }); };
+  document.getElementById('host').onclick = () => { ensureAudio(); homeError = ''; send({ t: 'create', name: name(), char: myChar, fighter: myFighter }); };
   const join = () => {
     ensureAudio();
     if (codeEl.value.trim().length !== 4) { homeError = 'Enter the 4-letter room code.'; return renderHome(); }
-    homeError = ''; send({ t: 'join', code: codeEl.value, name: name(), char: myChar });
+    homeError = ''; send({ t: 'join', code: codeEl.value, name: name(), char: myChar, fighter: myFighter });
   };
   document.getElementById('join').onclick = join;
   codeEl.onkeydown = e => { if (e.key === 'Enter') join(); };
@@ -200,19 +217,27 @@ function renderLobby() {
     <label>Invite link</label>
     ${links.map(l => `<div class="linkrow"><input readonly value="${esc(l)}"><button data-copy="${esc(l)}">Copy</button></div>`).join('')}
     ${local ? `<p class="note">You're playing on <b>localhost</b>, so the link above is your local-network address. It works for friends on the same Wi-Fi. For friends elsewhere, use a tunnel link instead (see README).</p>` : ''}
-    <div style="margin-top:18px">${charPicker()}${viewPicker()}
+    <div style="margin-top:18px">${room.mode === 'fight' ? '' : charPicker()}${viewPicker()}
       <label>Game mode${isHost ? '' : ' (the host picks)'}</label><div class="seg">${Sh.MODES.map(([k, n]) => `<button data-mode="${k}" class="${k === room.mode ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${n}</button>`).join('')}</div>
-      <label>Map${isHost ? '' : ' (the host picks)'}</label><div class="seg">${Sh.MAPS.map(([k, n]) => `<button data-map="${k}" class="${k === room.map ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${n}</button>`).join('')}</div>
-      <label>${room.mode === 'clay' ? 'Hunt length' : 'Round length'}${isHost ? '' : ' (the host picks)'}</label><div class="seg">${ROUND_TIMES.map(s => `<button data-time="${s}" class="${s === room.roundTime ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${s / 60} min</button>`).join('')}</div>
+      ${room.mode === 'fight' ? `<label>Your fighter</label><div class="fighter-row"><canvas id="fprev" width="168" height="192"></canvas><div><button class="go" id="fedit">Make your fighter</button> <button id="ftry">▶ Try it out</button><p class="note">Special move: <b>${Sh.SPECIAL_NAMES[myFighter.special]}</b></p></div></div>`
+      : `<label>Map${isHost ? '' : ' (the host picks)'}</label><div class="seg">${Sh.MAPS.map(([k, n]) => `<button data-map="${k}" class="${k === room.map ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${n}</button>`).join('')}</div>
+      <label>${room.mode === 'clay' ? 'Hunt length' : 'Round length'}${isHost ? '' : ' (the host picks)'}</label><div class="seg">${ROUND_TIMES.map(s => `<button data-time="${s}" class="${s === room.roundTime ? 'on' : ''}" ${isHost ? '' : 'disabled'}>${s / 60} min</button>`).join('')}</div>`}
     </div>
     <h3>Players (${room.players.length}/${MAX_PLAYERS})</h3>
-    <ul class="plist">${room.players.map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}<em>${(CHARS.find(c => c[0] === p.char) || CHARS[0])[1]}</em>${p.id === room.host ? '<em>host</em>' : ''}${p.id === myId ? '<em>you</em>' : ''}</li>`).join('')}</ul>
+    <ul class="plist">${room.players.map(p => `<li><span class="dot" style="background:${COLORS[p.slot]}"></span>${esc(p.name)}${room.mode === 'fight' ? '' : `<em>${(CHARS.find(c => c[0] === p.char) || CHARS[0])[1]}</em>`}${p.id === room.host ? '<em>host</em>' : ''}${p.id === myId ? '<em>you</em>' : ''}</li>`).join('')}</ul>
     ${isHost ? (solo ? `<button class="go" id="start">Explore the map</button><p class="note">You're on your own, so there's no tagger and no clock: just walk around the map. You need at least ${MIN_PLAYERS} players to play, so send your friends the invite link.</p>`
-             : `<button class="go" id="start" ${enough ? '' : 'disabled'}>Start round</button><p class="note">${!enough ? `You need at least ${MIN_PLAYERS} players. Send your friends the invite link.` : room.mode === 'clay' ? `Everyone sculpts something out of clay (${Sh.C.SCULPT_TIME / 60} min), hides it (${Sh.C.HIDE_TIME}s), then hunts for someone else's.` : `${taggers} random player${taggers > 1 ? 's' : ''} will be IT; the other ${room.players.length - taggers} will run.`}</p>`)
+             : `<button class="go" id="start" ${enough ? '' : 'disabled'}>Start round</button><p class="note">${!enough ? `You need at least ${MIN_PLAYERS} players. Send your friends the invite link.` : room.mode === 'fight' ? `Everyone goes into a knockout bracket of 1 v 1 fights (best of 3 rounds) until one champion is left. Everyone else watches from the stands.` : room.mode === 'clay' ? `Everyone sculpts something out of clay (${Sh.C.SCULPT_TIME / 60} min), hides it (${Sh.C.HIDE_TIME}s), then hunts for someone else's.` : `${taggers} random player${taggers > 1 ? 's' : ''} will be IT; the other ${room.players.length - taggers} will run.`}</p>`)
              : `<p class="sub">Waiting for the host to start…</p>`}
     ${musicButton()}`;
   panel.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(b));
   bindViewPicker(); bindMusicButton(); bindCharPicker();
+  if (room.mode === 'fight') {
+    const cv = document.getElementById('fprev'), c = cv.getContext('2d');
+    const slot = (room.players.find(p => p.id === myId) || { slot: 0 }).slot;
+    loadSprites().then(L => { c.clearRect(0, 0, cv.width, cv.height); c.drawImage(L.fighterPicture(myFighter, slot), 0, 12, 168, 168); }).catch(e => console.error(e));
+    document.getElementById('fedit').onclick = () => openFighterBuilder();
+    document.getElementById('ftry').onclick = () => openFighterBuilder(true);
+  }
   if (isHost) panel.querySelectorAll('[data-map]').forEach(b => b.onclick = () => send({ t: 'map', map: b.dataset.map }));
   if (isHost) panel.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => send({ t: 'mode', mode: b.dataset.mode }));
   if (isHost) panel.querySelectorAll('[data-time]').forEach(b => b.onclick = () => send({ t: 'time', time: Number(b.dataset.time) }));
@@ -228,6 +253,7 @@ function copy(btn) {
 
 function renderEnd() {
   if (G.result.mode === 'clay') return renderClayEnd();
+  if (G.result.mode === 'fight') return renderFightEnd();
   const r = G.result, isHost = room.host === myId, meP = G.players.get(myId);
   const m = Math.floor(r.time / 60), s = Math.floor(r.time % 60);
   const iWon = meP && meP.role === r.winner;
@@ -262,6 +288,7 @@ function initGame(m) {
     grid: m.grid, n: m.players.length, roundTime: m.roundTime, hold: m.hold, explore: !!m.explore,
     floors: m.floors || [{ x0: 0, x1: COLS - 1 }], stairs: m.stairs || [], floor: -1,
     mode: m.mode || 'tag', phase: m.phase || null, left: m.sculptTime || 0, sculptTime: m.sculptTime || 0, objs: new Map(), target: null, canFind: false, sculptDone: null,
+    arena: m.arena || null, bracket: null, fm: null, fp: null, beams: [], beamsAt: 0, fx: [], banner: null, myAct: null, blocking: false, dodgeUntil: 0, dodgeCd: 0, kb: null, shake: 0,
     upper: m.upper || null, ramps: m.ramps || [], library: m.library || null, fl: meInfo.fl || 0, jumpT: -1, rest: 0, jc: 0, sentJ: 0,
     map: m.map || 'building', flights: m.flights || [], rooms: m.rooms || [], furniture: m.furniture || [], doors: m.doors || [], forest: m.forest || null, office: m.office || null, mall: m.mall || null, bright: !!m.bright, fade: 0,
     players: new Map(), me: { x: meInfo.x, y: meInfo.y }, slot: meInfo.slot, role: meInfo.role, tpSeq: 0,
@@ -278,6 +305,14 @@ function initGame(m) {
   if (v3d) v3d.build(G);
   closeSculpt();
   if (G.mode === 'clay' && G.phase === 'sculpt') startSculpt();
+  if (G.arena) {
+    const g = G;
+    loadSprites().then(L => {
+      if (G !== g) return;
+      g.sprites = new Map([...g.players].map(([id, p]) => [id, L.fighterSprites(p.fighter, p.slot)]));
+      g.drawSprite = L.drawFighterSprite;
+    }).catch(e => console.error(e));
+  }
 }
 
 function applySnapshot(s) {
@@ -286,6 +321,7 @@ function applySnapshot(s) {
   for (const t of G.traps) t.hot = hot.has(t.id);
   G.time = s.time; G.danger = s.danger;
   if (s.ph) { G.phase = s.ph; G.left = s.left; }
+  if (G.mode === 'fight') { G.fm = s.fm; G.fp = s.fp; G.left = s.left; G.beams = s.beams || []; G.beamsAt = performance.now(); }
   const seen = new Set();
   for (const sp of s.players) {
     const p = G.players.get(sp.id);
@@ -293,6 +329,7 @@ function applySnapshot(s) {
     seen.add(sp.id);
     Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, tags: sp.tags, fl: sp.f || 0, sc: sp.sc || 0 });
     if (sp.j > p.jc) { p.jc = sp.j; if (sp.id !== myId) p.jumpT = 0; } // they jumped
+    if (sp.hp !== undefined) Object.assign(p, { hp: sp.hp, mt: sp.mt, ak: sp.ak, sd: sp.sd, at: sp.at, atAt: performance.now(), bk: sp.bk, st: sp.st, dg: sp.dg });
   }
   for (const id of [...G.players.keys()]) if (!seen.has(id)) G.players.delete(id); // someone left
   G.n = G.players.size;
@@ -319,14 +356,20 @@ addEventListener('keydown', e => {
   if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
   if (e.code === 'KeyM' && !e.repeat) setMusic(!musicOn);
   if (e.code === 'Space' && !e.repeat) jump();
-  if (e.code === 'KeyF' && !e.repeat) clayAction();
+  if (e.code === 'KeyF' && !e.repeat) { if (G && G.mode === 'fight') fightInput('special'); else clayAction(); }
+  if (G && G.mode === 'fight' && !e.repeat) {
+    if (e.code === 'KeyJ') fightInput('punch');
+    if (e.code === 'KeyK') fightInput('kick');
+    if (e.code === 'KeyC') fightInput('dodge');
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') setBlock(true);
+  }
   if (e.code === 'KeyL' && !e.repeat && G && G.explore && ui === 'play') leaveExplore();
   if (e.code === 'KeyV' && !e.repeat && G && ui === 'play') {
     const i = VIEWS.findIndex(v => v[0] === viewMode);
     setView(VIEWS[(i + 1) % VIEWS.length][0]);
   }
 });
-addEventListener('keyup', e => keys.delete(e.code));
+addEventListener('keyup', e => { keys.delete(e.code); if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') setBlock(false); });
 
 // exploring on your own: a button (and the L key) takes you back to the lobby
 const exploreExit = document.getElementById('exploreExit');
@@ -337,7 +380,8 @@ addEventListener('blur', () => keys.clear());
 
 cvs.addEventListener('mousedown', e => {
   ensureAudio();
-  if (e.button === 0) act(); // left click: tag, or unfreeze
+  if (e.button === 0) act(); // left click: tag, or unfreeze (a punch in a fight)
+  if (e.button === 2 && G && G.mode === 'fight') fightInput('kick'); // right click: a kick
   // 3D views: click to capture the mouse for looking around
   if (viewMode !== 'top' && ui === 'play' && !document.pointerLockElement && cvs.requestPointerLock) {
     try { const r = cvs.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch {}
@@ -362,6 +406,7 @@ const sameFloorAs = (a, b) => G.upper ? Math.abs(Sh.elev(G, a) - Sh.elev(G, b)) 
 // tag a runner (if you're IT) or unfreeze a friend (if you're a runner); the server checks who's in reach
 function act() {
   if (G && G.mode === 'clay') return clayAction(); // (in hide clay a click hides or picks up your sculpture)
+  if (G && G.mode === 'fight') return fightInput('punch');
   if (!G || ui !== 'play' || G.explore) return;
   const meP = G.players.get(myId);
   if (!meP || meP.fz || (G.role === 'it' && G.time < G.hold)) return; // frozen, or still waiting out the head start
@@ -501,9 +546,10 @@ function update(dt) {
   }
   G.fade = Math.max(0, G.fade - dt * 2.2);
   if (G.mode === 'clay') clayUpdate(dt);
+  if (G.mode === 'fight') fightUpdate(dt);
   // jumps in progress (yours, and other people's)
-  if (G.jumpT >= 0) { G.jumpT += dt; if (G.jumpT >= JUMP_T) { G.jumpT = -1; G.rest = JUMP_REST; } } else G.rest = Math.max(0, G.rest - dt);
-  for (const p of G.players.values()) if (p.jumpT >= 0 && (p.jumpT += dt) >= JUMP_T) p.jumpT = -1;
+  if (G.jumpT >= 0) { G.jumpT += dt; if (G.jumpT >= jumpLen()) { G.jumpT = -1; G.rest = JUMP_REST; } } else G.rest = Math.max(0, G.rest - dt);
+  for (const p of G.players.values()) if (p.jumpT >= 0 && (p.jumpT += dt) >= jumpLen()) p.jumpT = -1;
   for (const n of G.noises) n.t -= dt;
   G.noises = G.noises.filter(n => n.t > 0);
   // doors swing open when anyone comes close, and fall shut after
@@ -560,8 +606,10 @@ function update(dt) {
     const l = Math.hypot(mx, my); if (l > 1) { mx /= l; my /= l; }
     if (c > 0.3) G.flip = 1; else if (c < -0.3) G.flip = -1;
   }
-  if ((mx || my) && !stuck) {
-    const bx = G.me.x, by = G.me.y, speed = PLAYER_SPEED * (G.role === 'it' ? TAGGER_SPEED : 1);
+  let speed = PLAYER_SPEED * (G.role === 'it' ? TAGGER_SPEED : 1), still = stuck;
+  if (G.mode === 'fight') ({ mx, my, speed, still } = fightSteer(dt, mx, my, speed, stuck));
+  if ((mx || my) && !still) {
+    const bx = G.me.x, by = G.me.y;
     Sh.moveCircle(Sh.world(G, G.fl), G.me, mx * speed * dt, my * speed * dt, PLAYER_R);
     G.moving = G.me.x !== bx || G.me.y !== by;
     const fl = Sh.nextFloor(G, G.me.x, G.me.y, G.fl); // up or down a staircase
@@ -719,6 +767,7 @@ function renderMaps() {
   else if (G.map === 'forest') drawForestMap(m, G);
   else if (G.map === 'office') drawOfficeMap(m, G);
   else if (G.map === 'mall') drawMallMap(m, G);
+  else if (G.arena) drawArenaMap(m, G);
   else drawBuildingMap(m);
   // staircases: steps, with an arrow for up or down (the apartment draws its own flights)
   if (G.map !== 'apartment') for (const s of G.stairs) {
@@ -935,13 +984,14 @@ function draw3D(t) {
     const pos = posOf(id, p), self = id === myId;
     players.set(id, {
       ...pos, a: self ? aim : p.ra, walk: self ? G.walk : p.walk, role: p.role, fz: p.fz, imm: p.imm,
-      show: canSee(view, id, p, pos) && !(G.mode === 'clay' && G.phase === 'sculpt'), mark: !self && isTeammate(p), h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * JUMP_3D,
+      show: canSee(view, id, p, pos) && !(G.mode === 'clay' && G.phase === 'sculpt'), mark: !self && isTeammate(p), h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * jump3d(),
+      pose: G.arena ? poseOf(id, p) : null,
     });
   }
   v3d.render({
-    G, view, t, mode: viewMode, players, noises: G.noises,
+    G, view, t, mode: viewMode, players, noises: G.noises, beams: G.mode === 'fight' ? G.beams.map(b => ({ ...b, age: b.t + (performance.now() - G.beamsAt) / 1000, len: FT[b.k] ? FT[b.k].len : 0, life: FT[b.k] ? FT[b.k].beam : 0 })) : null, fightCam: G.mode === 'fight' && inMatch(myId), excite: G.mode === 'fight' ? Math.min(1, G.fx.length * 0.5) : 0,
     clay: G.mode === 'clay' ? [...G.objs.values()].map(o => ({ ...o, show: o.x != null && (G.phase === 'hunt' || o.id === myId), fill: lumpColor((G.players.get(o.id) || { slot: 0 }).slot) })) : null,
-    pitch, flicker: G.flicker, walk: G.walk, viewH: heightAt(view), viewJump: jumpK(G.jumpT) * JUMP_3D,
+    pitch, flicker: G.flicker, walk: G.walk, viewH: heightAt(view), viewJump: jumpK(G.jumpT) * jump3d(),
     backRoom: castRay(view.x, view.y, view.a + Math.PI, 2.2 * TILE), // room behind you for the third-person camera
   });
   ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cvs.width, cvs.height);
@@ -969,15 +1019,18 @@ function drawWorld(t) {
     const pos = posOf(id, p), self = id === myId;
     if (!canSee(view, id, p, pos)) continue;
     const below = G.upper && Sh.elev(G, pos) < Sh.elev(G, view) - 0.5; // seen down in the atrium from the gallery
-    const up = jumpK(self ? G.jumpT : p.jumpT) * JUMP_PX;
+    const up = jumpK(self ? G.jumpT : p.jumpT) * jumpPx();
     actors.push({ y: pos.y + (below ? -1e5 : 0), draw: () => {
       const blink = p.imm && Math.floor(t * 10) % 2; // just unfrozen: can't be tagged for a moment
       if (up) { ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(pos.x, pos.y + 15, 11 * (1 - up / 60), 4, 0, 0, Math.PI * 2); ctx.fill(); } // their shadow stays on the floor
-      drawPerson(ctx, p.char, pos.x, pos.y - up, p.fz ? shade(COLORS[p.slot], 0.75) : COLORS[p.slot], self ? G.flip : p.flip, self ? G.walk : p.walk, (blink ? 0.45 : 1) * (below ? 0.7 : 1), p.slot);
+      const sprites = G.arena && G.sprites && G.sprites.get(id);
+      if (sprites) G.drawSprite(ctx, sprites, pos.x, pos.y - up, self ? G.flip : p.flip, self ? G.walk : p.walk, poseOf(id, p));
+      else drawPerson(ctx, p.char, pos.x, pos.y - up, p.fz ? shade(COLORS[p.slot], 0.75) : COLORS[p.slot], self ? G.flip : p.flip, self ? G.walk : p.walk, (blink ? 0.45 : 1) * (below ? 0.7 : 1), p.slot);
       drawTagMarks(p, pos.x, pos.y - up, t);
     } });
   }
   actors.sort((a, b) => a.y - b.y).forEach(a => a.draw());
+  if (G.mode === 'fight') drawFightWorld(t);
   const sinceAct = (performance.now() - (G.actAt || -1e9)) / 250;
   if (sinceAct < 1) { // a quick ring around you when you click: your reach
     const reach = G.role === 'it' ? Sh.C.TAG_DIST : Sh.C.RESCUE_DIST;
@@ -1138,6 +1191,7 @@ function drawHud(t) {
   }
   drawMinimap(W - COLS * MINI - 10, 50);
   if (G.mode === 'clay') { actBtn.hidden = true; drawClayHud(meP, t); drawHudFooter(); return; }
+  if (G.mode === 'fight') { actBtn.hidden = true; drawFightHud(meP, t); drawHudFooter(); return; }
   drawStatus(meP);
   // phones: the tag / unfreeze button, lit up when someone's in reach
   const showBtn = isTouch && !G.explore && !(meP.fz && G.role !== 'it');
@@ -1332,6 +1386,257 @@ function renderClayEnd() {
       <em>found ${p.finds} · theirs ${p.foundBy ? `was found by ${esc(p.foundBy)} after ${mmss(p.hidden)}` : `stayed hidden (${mmss(p.hidden)})`}</em></li>`).join('')}</ul>
     ${isHost ? `<div class="row"><button class="go" id="again">Play again</button><button id="lobby">Back to lobby</button></div>`
              : `<p class="sub">Waiting for the host…</p>`}`;
+  if (isHost) {
+    document.getElementById('again').onclick = () => send({ t: 'start' });
+    document.getElementById('lobby').onclick = () => send({ t: 'lobby' });
+  }
+}
+
+// ---------------------------------------------------------------- arena fights
+// Make your own fighter (saved on this device), then a knockout bracket of 1 v 1 fights. While you're in the ring you
+// always face your opponent; the server decides what hits.
+const FT = Sh.FIGHT;
+let myFighter = loadFighter();
+const fbuildHost = document.getElementById('fbuild'), fpad = document.getElementById('fpad');
+function openFighterBuilder(practice = false) {
+  import('./fightui.js').then(mod => mod.openBuilder(fbuildHost, myFighter, f => {
+    myFighter = f; saveFighter(f); send({ t: 'fighter', f });
+    if (ui === 'lobby') renderLobby();
+  }, { practice })).catch(e => { console.error(e); alert("Couldn't open the fighter maker (it needs WebGL)."); });
+}
+cvs.addEventListener('contextmenu', e => { if (G && G.mode === 'fight') e.preventDefault(); }); // (right-click kicks)
+// phone buttons: punch, kick, dodge, special, and block (held down)
+fpad.querySelectorAll('button').forEach(b => {
+  const k = b.dataset.f;
+  b.addEventListener('touchstart', e => { e.preventDefault(); e.stopPropagation(); ensureAudio(); if (k === 'block') setBlock(true); else fightInput(k); }, { passive: false });
+  b.addEventListener('touchend', e => { e.preventDefault(); if (k === 'block') setBlock(false); }, { passive: false });
+  b.onmousedown = () => { if (k === 'block') setBlock(true); else fightInput(k); }; b.onmouseup = () => { if (k === 'block') setBlock(false); };
+});
+const inMatch = id => !!(G && G.fm && (G.fm.a === id || G.fm.b === id));
+const oppOf = id => G.fm && G.players.get(G.fm.a === id ? G.fm.b : G.fm.a);
+const nameOf = id => (G.players.get(id) || { name: '—' }).name;
+const banner = (text, color, dur) => { G.banner = { text, color, t: dur, d: dur }; };
+
+// a move: shown straight away on your own screen; the server works out whether it lands
+function fightInput(a) {
+  if (!G || G.mode !== 'fight' || ui !== 'play' || !inMatch(myId) || G.fp !== 'fight') return;
+  const meP = G.players.get(myId), now = performance.now();
+  if (!meP || meP.st) return;
+  if (a === 'dodge') {
+    if (now < G.dodgeCd || G.myAct) return;
+    G.dodgeUntil = now + FT.DODGE.t * 1000; G.dodgeCd = now + FT.DODGE.cd * 1000;
+    send({ t: 'fx', a }); playFight('swish');
+    return;
+  }
+  if (G.myAct || G.blocking) return;
+  let k = a;
+  if (a === 'special') {
+    if ((meP.mt || 0) < 100) { addMsg("Your special isn't ready: land (or take) some hits to fill the meter.", '#ffcc80', 1.6); return; }
+    k = meP.fighter.special;
+  }
+  if (k === 'punch') G.jab = G.jab === 'L' ? 'R' : 'L'; // (jabs: left, right, left...)
+  G.myAct = { k, t0: now, dur: Math.max(FT[k].cd, FT[k].wind + 0.05) * 1000, side: k === 'punch' ? G.jab : null };
+  send({ t: 'fx', a });
+  if (k === 'punch' || k === 'kick') playFight('swish');
+}
+function setBlock(on) {
+  if (!G || G.mode !== 'fight') return;
+  on = !!on && inMatch(myId);
+  if (on !== G.blocking) { G.blocking = on; send({ t: 'blk', on }); }
+}
+function onHit(m) {
+  const big = m.kind !== 'punch';
+  G.fx.push({ x: m.x, y: m.y, t: 0.7, d: 0.7, text: m.miss ? 'MISS' : m.blocked ? 'BLOCK' : { punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH' }[m.kind], dmg: m.miss ? 0 : m.dmg, color: m.miss ? '#b9b5d6' : m.blocked ? '#7fd4ff' : big ? '#ff8a3d' : '#ffe066', big });
+  playFight(m.miss ? 'swish' : m.blocked ? 'block' : big ? 'kick' : 'punch');
+  if (m.to === myId && !m.miss && !m.blocked) G.shake = big ? 0.35 : 0.15;
+}
+function fightUpdate(dt) {
+  G.left = Math.max(0, G.left - dt);
+  for (const f of G.fx) f.t -= dt;
+  G.fx = G.fx.filter(f => f.t > 0);
+  if (G.banner && (G.banner.t -= dt) <= 0) G.banner = null;
+  G.shake = Math.max(0, G.shake - dt);
+  if (G.myAct && performance.now() - G.myAct.t0 > G.myAct.dur) G.myAct = null;
+  const show = isTouch && ui === 'play' && inMatch(myId);
+  fpad.style.display = show ? 'grid' : 'none';
+  if (show) fpad.querySelector('[data-f="special"]').classList.toggle('ready', (G.players.get(myId).mt || 0) >= 100);
+  if (!inMatch(myId) && G.blocking) setBlock(false);
+}
+// how you move while fighting: always facing your opponent; pinned before the bell, after a knock-out and while
+// stunned, and while charging and firing a beam; slower while blocking; a dodge rolls you (back, if you're not steering);
+// a big hit knocks you back. (The server allows exactly this.)
+function fightSteer(dt, mx, my, speed, stuck) {
+  if (!inMatch(myId)) return { mx, my, speed, still: stuck };
+  const meP = G.players.get(myId), o = oppOf(myId), now = performance.now();
+  if (o) aim = Math.atan2(o.ry - G.me.y, o.rx - G.me.x);
+  G.flip = Math.cos(aim) < 0 ? -1 : 1;
+  if (G.kb && now < G.kb.until) Sh.moveCircle(G, G.me, G.kb.vx * dt, G.kb.vy * dt, PLAYER_R);
+  if (G.fp !== 'fight' || meP.st) return { mx: 0, my: 0, speed, still: true };
+  if (now < G.dodgeUntil) {
+    if (!mx && !my) { mx = -Math.cos(aim); my = -Math.sin(aim); }
+    const l = Math.hypot(mx, my);
+    return { mx: mx / l, my: my / l, speed: FT.DODGE.speed, still: false };
+  }
+  if (G.myAct && FT[G.myAct.k].beam) return { mx: 0, my: 0, speed, still: true };
+  if (o) { // don't walk through each other
+    const dx = G.me.x - o.rx, dy = G.me.y - o.ry, d = Math.hypot(dx, dy);
+    if (d < 30 && d > 0.1) { const push = Math.min(30 - d, 160 * dt); Sh.moveCircle(G, G.me, dx / d * push, dy / d * push, PLAYER_R); }
+  }
+  return { mx, my, speed: speed * (G.blocking ? FT.BLOCK_SPEED : 1), still: false };
+}
+// what a fighter is doing right now, for drawing them: { k: move, p: 0..1 }
+function poseOf(id, p) {
+  if (!G.arena || !p) return null;
+  const now = performance.now(), fighting = inMatch(id);
+  if (fighting && p.hp <= 0) return { k: 'ko', p: 1 };
+  if (!fighting) return null;
+  if (id === myId) {
+    if (now < G.dodgeUntil) return { k: 'dodge', p: 1 - (G.dodgeUntil - now) / (FT.DODGE.t * 1000) };
+    if (p.st) return { k: 'stun', p: (now % 1000) / 1000 };
+    if (G.myAct) return { k: G.myAct.k, p: (now - G.myAct.t0) / G.myAct.dur, side: G.myAct.side };
+    if (G.jumpT >= 0) return { k: 'jump', p: G.jumpT / jumpLen() };
+    if (G.blocking) return { k: 'block', p: 1 };
+    return null;
+  }
+  if (p.dg) return { k: 'dodge', p: (now % 280) / 280 };
+  if (p.st) return { k: 'stun', p: (now % 1000) / 1000 };
+  if (p.ak && FT[p.ak]) { const s = FT[p.ak]; return { k: p.ak, p: (p.at + (now - p.atAt) / 1000) / Math.max(s.cd, s.wind + 0.05), side: p.sd }; }
+  if (p.jumpT >= 0) return { k: 'jump', p: p.jumpT / jumpLen() };
+  if (p.bk) return { k: 'block', p: 1 };
+  return null;
+}
+// fight sounds, made on the spot: thumps for punches and kicks, a clank for a block, a whoosh, a bell
+function playFight(kind) {
+  if (!actx || actx.state !== 'running') return;
+  const now = actx.currentTime, out = actx.createGain(); out.gain.value = 0.5; out.connect(actx.destination);
+  if (!noiseBuf) { noiseBuf = actx.createBuffer(1, actx.sampleRate / 2, actx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  const tone = (t, dur, f0, f1, type, v) => { const o = actx.createOscillator(), g = actx.createGain(); o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur); g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur); o.connect(g).connect(out); o.start(t); o.stop(t + dur + 0.02); };
+  const burst = (t, dur, freq, q, v) => { const s = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain(); s.buffer = noiseBuf; f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q; g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur); s.connect(f).connect(g).connect(out); s.start(t); s.stop(t + dur + 0.02); };
+  if (kind === 'punch') { tone(now, 0.12, 180, 60, 'sine', 0.9); burst(now, 0.05, 900, 1, 0.6); }
+  else if (kind === 'kick') { tone(now, 0.2, 140, 40, 'sine', 1); burst(now, 0.08, 500, 1, 0.8); }
+  else if (kind === 'block') { tone(now, 0.15, 900, 700, 'square', 0.15); burst(now, 0.05, 2500, 3, 0.4); }
+  else if (kind === 'swish') burst(now, 0.12, 1800, 0.7, 0.35);
+  else if (kind === 'bell') { tone(now, 1.2, 1320, 1300, 'sine', 0.35); tone(now, 1.0, 660, 655, 'sine', 0.25); }
+  else if (kind === 'kamehameha' || kind === 'finalflash') { // a rising charge, then the roar of the beam
+    const s = FT[kind], big = kind === 'finalflash';
+    tone(now, s.wind, big ? 160 : 220, big ? 700 : 900, 'sawtooth', 0.05); tone(now, s.wind, big ? 320 : 440, big ? 1400 : 1800, 'sine', 0.08);
+    burst(now + s.wind, s.beam + 0.25, big ? 500 : 800, 0.4, 0.9); tone(now + s.wind, s.beam + 0.1, big ? 90 : 120, 45, 'sawtooth', 0.25);
+  }
+}
+
+// in the world (top-down): beams, a special's energy ball as it charges, health bars over the two fighters, hit pops
+function drawFightWorld(t) {
+  for (const b of G.beams) {
+    const s = FT[b.k]; if (!s) continue;
+    const age = b.t + (performance.now() - G.beamsAt) / 1000, grow = Math.min(1, Math.max(0, age / 0.12)), fade = Math.min(1, Math.max(0, (s.beam - age) / 0.15));
+    if (fade <= 0) continue;
+    const col = b.k === 'finalflash' ? '255,225,77' : '95,208,255', L = s.len * grow, w = s.w * fade * (1 + 0.1 * Math.sin(t * 45));
+    ctx.save(); ctx.translate(b.x, b.y - 14); ctx.rotate(b.a); ctx.lineCap = 'round';
+    for (const [lw, c] of [[w * 2.2, `rgba(${col},.25)`], [w * 1.2, `rgba(${col},.75)`], [w * 0.45, '#ffffff']]) { ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(L, 0); ctx.stroke(); }
+    ctx.restore();
+  }
+  if (G.fm) for (const id of [G.fm.a, G.fm.b]) { // (charging: a growing ball of energy in the hands)
+    const p = G.players.get(id), ps = p && poseOf(id, p), s = ps && FT[ps.k];
+    if (!s || !s.beam) continue;
+    const c = ps.p * Math.max(s.cd, s.wind + 0.05) / s.wind; if (c >= 1) continue;
+    const pos = posOf(id, p), a = id === myId ? aim : (p.ra || 0), x = pos.x + Math.cos(a) * 10, y = pos.y - 16, r = 4 + 12 * c;
+    const g = ctx.createRadialGradient(x, y, 1, x, y, r); g.addColorStop(0, '#ffffff'); g.addColorStop(0.4, ps.k === 'finalflash' ? '#ffe14d' : '#5fd0ff'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * (1 + 0.1 * Math.sin(t * 50)), 0, Math.PI * 2); ctx.fill();
+  }
+  if (G.fm) for (const id of [G.fm.a, G.fm.b]) {
+    const p = G.players.get(id); if (!p) continue;
+    const pos = posOf(id, p), w = 40, hp = Math.max(0, p.hp ?? FT.HP) / FT.HP;
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(pos.x - w / 2 - 1, pos.y - 56, w + 2, 6);
+    ctx.fillStyle = hp > 0.5 ? '#69f0ae' : hp > 0.25 ? '#ffd54f' : '#ff5252'; ctx.fillRect(pos.x - w / 2, pos.y - 55, w * hp, 4);
+  }
+  for (const f of G.fx) {
+    const k = f.t / f.d, s = (f.big ? 1.4 : 1) * (1.3 - 0.3 * k);
+    ctx.save(); ctx.translate(f.x, f.y - 30 - (1 - k) * 14); ctx.scale(s, s); ctx.globalAlpha = Math.min(1, k * 2);
+    ctx.fillStyle = f.color; ctx.beginPath();
+    for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2, r = i % 2 ? 11 : 19; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+    ctx.fill();
+    ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#2a1400'; ctx.fillText(f.text, 0, 0);
+    if (f.dmg) { ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.strokeText(`-${f.dmg}`, 0, 22); ctx.fillText(`-${f.dmg}`, 0, 22); }
+    ctx.restore();
+  }
+}
+
+function drawFightHud(meP, t) {
+  const fm = G.fm, bar = (x, y, w, h, k, c, back = 'rgba(0,0,0,.55)') => { ctx.fillStyle = back; roundRect(ctx, x, y, w, h, h / 2); ctx.fill(); if (k > 0) { ctx.fillStyle = c; roundRect(ctx, x, y, Math.max(h, w * k), h, h / 2); ctx.fill(); } };
+  ctx.textBaseline = 'middle';
+  if (fm) {
+    // the two fighters: name, health, special meter and rounds won
+    const pw = Math.min(260, (W - 120) / 2);
+    [[fm.a, 12, 'left', fm.w[0]], [fm.b, W - 12 - pw, 'right', fm.w[1]]].forEach(([id, x, side, wins]) => {
+      const p = G.players.get(id), hp = p ? Math.max(0, p.hp ?? FT.HP) / FT.HP : 0, mt = p ? (p.mt || 0) / 100 : 0;
+      ctx.fillStyle = 'rgba(10,10,20,.8)'; roundRect(ctx, x, 8, pw, 54, 8); ctx.fill();
+      ctx.font = 'bold 14px system-ui'; ctx.textAlign = side; ctx.fillStyle = p ? COLORS[p.slot] : '#999';
+      ctx.fillText(`${nameOf(id)}${id === myId ? ' (you)' : ''}`, side === 'left' ? x + 10 : x + pw - 10, 20);
+      for (let i = 0; i < FT.WINS; i++) { ctx.fillStyle = i < wins ? '#ffd54f' : 'rgba(255,255,255,.2)'; ctx.beginPath(); ctx.arc(side === 'left' ? x + pw - 14 - i * 14 : x + 14 + i * 14, 20, 5, 0, Math.PI * 2); ctx.fill(); }
+      const hx = x + 10, hw = pw - 20;
+      bar(hx, 30, hw, 12, hp, hp > 0.5 ? '#69f0ae' : hp > 0.25 ? '#ffd54f' : '#ff5252');
+      bar(hx, 47, hw, 7, mt, mt >= 1 ? (Math.sin(t * 10) > 0 ? '#ffb347' : '#fff3c4') : '#ff9e40');
+      if (mt >= 1) { ctx.font = 'bold 9px system-ui'; ctx.textAlign = side; ctx.fillStyle = '#2a1400'; ctx.fillText('SPECIAL READY', side === 'left' ? hx + 6 : hx + hw - 6, 51); }
+    });
+    ctx.textAlign = 'center'; ctx.font = 'bold 22px system-ui'; ctx.fillStyle = G.fp === 'fight' && G.left < 10 ? '#ff5252' : '#fff';
+    ctx.fillText(G.fp === 'fight' ? String(Math.ceil(G.left)) : G.fp === 'intro' ? `${Math.ceil(G.left)}` : '—', W / 2, 26);
+    ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#b9b5d6'; ctx.fillText(`ROUND ${fm.rn}`, W / 2, 48);
+  } else {
+    // between matches: who's up next
+    const rd = G.bracket && G.bracket[G.bracket.length - 1], next = rd && rd.find(m => m.w == null);
+    ctx.fillStyle = 'rgba(10,10,20,.85)'; roundRect(ctx, W / 2 - 170, 8, 340, 40, 8); ctx.fill();
+    ctx.textAlign = 'center'; ctx.font = 'bold 15px system-ui'; ctx.fillStyle = '#ffd54f';
+    ctx.fillText(next ? `Next up: ${nameOf(next.a)} vs ${nameOf(next.b)} · ${Math.ceil(G.left)}s` : `Next round of the bracket · ${Math.ceil(G.left)}s`, W / 2, 28);
+  }
+  // the bracket
+  if (G.bracket && W > 700) {
+    let y = 76;
+    ctx.fillStyle = 'rgba(10,10,20,.75)'; roundRect(ctx, 12, y, 190, 22 + G.bracket.reduce((n, rd) => n + rd.length * 17 + 18, 0), 8); ctx.fill();
+    ctx.textAlign = 'left'; ctx.font = 'bold 12px system-ui'; ctx.fillStyle = '#ffd54f'; ctx.fillText('BRACKET', 22, y + 13); y += 26;
+    G.bracket.forEach((rd, i) => {
+      ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#8f8ca6'; ctx.fillText(i === G.bracket.length - 1 && rd.length === 1 && G.bracket.length > 1 ? 'FINAL' : `ROUND ${i + 1}`, 22, y); y += 14;
+      for (const m of rd) {
+        const live = fm && fm.a === m.a && fm.b === m.b, nm = id => id == null ? 'bye' : nameOf(id).slice(0, 9);
+        ctx.font = `${live ? 'bold ' : ''}11px system-ui`; ctx.fillStyle = live ? '#ff8a80' : m.w != null ? '#c9c6da' : '#e8e6f0';
+        ctx.fillText(`${m.w === m.a ? '✓ ' : ''}${nm(m.a)}  vs  ${m.w === m.b && m.b != null ? '✓ ' : ''}${nm(m.b)}${live ? '  ●' : ''}`, 22, y); y += 17;
+      }
+      y += 4;
+    });
+  }
+  // the big announcements
+  if (G.banner) {
+    const b = G.banner, k = b.t / b.d, s = 1 + Math.max(0, (k - 0.8) * 2.5);
+    ctx.save(); ctx.translate(W / 2, H * 0.4); ctx.scale(s, s); ctx.globalAlpha = Math.min(1, k * 3);
+    ctx.font = `900 ${Math.min(96, W / 8)}px system-ui`; ctx.textAlign = 'center'; ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(0,0,0,.7)';
+    ctx.strokeText(b.text, 0, 0); ctx.fillStyle = b.color; ctx.fillText(b.text, 0, 0);
+    ctx.restore();
+  }
+  // the bottom: the controls if you're fighting, or what's on if you're watching
+  const w = Math.min(560, W - 24), x = 12, y = H - 72, fighting = inMatch(myId);
+  ctx.fillStyle = 'rgba(10,10,20,.8)'; roundRect(ctx, x, y, w, 60, 8); ctx.fill();
+  ctx.fillStyle = fighting ? '#ff5252' : '#b388ff'; ctx.fillRect(x, y, 4, 60);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.font = 'bold 14px system-ui'; ctx.fillStyle = COLORS[meP.slot]; ctx.fillText(meP.name, x + 14, y + 20);
+  ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'right'; ctx.fillStyle = fighting ? '#ff8a80' : '#b388ff'; ctx.fillText(fighting ? 'FIGHTING' : 'WATCHING', x + w - 10, y + 20); ctx.textAlign = 'left';
+  ctx.font = '12px system-ui'; ctx.fillStyle = '#e8e6f0';
+  ctx.fillText(fighting ? (isTouch ? 'Use the buttons · double-tap to jump' : 'Punch: click / J · Kick: right-click / K · Block: hold Shift · Dodge: C · Special: F · Jump: Space')
+    : fm ? `${nameOf(fm.a)} vs ${nameOf(fm.b)}: watch from the stands` : 'Waiting for the next fight…', x + 14, y + 44);
+}
+
+function renderFightEnd() {
+  const r = G.result, isHost = room.host === myId, champ = r.stats.find(p => p.id === r.champion);
+  overlay.classList.remove('hidden');
+  panel.innerHTML = `
+    <p class="result" style="color:#ffd54f">${champ ? `🏆 ${esc(champ.name)} IS THE CHAMPION!` : 'NO CHAMPION'}</p>
+    <p class="sub">${esc(r.reason || '')}${champ && champ.id === myId ? 'You won the tournament!' : ''}</p>
+    ${champ ? '<canvas id="champ" width="168" height="192" style="position:static;display:block;margin:0 auto 12px;width:150px;height:171px"></canvas>' : ''}
+    <h3>The bracket</h3>
+    <ul class="plist">${r.rounds.map((rd, i) => rd.map(m => {
+      const nm = id => id == null ? 'bye' : esc((r.stats.find(p => p.id === id) || { name: '—' }).name);
+      return `<li><em style="margin:0 8px 0 0">${i === r.rounds.length - 1 && rd.length === 1 ? 'Final' : `Round ${i + 1}`}</em>${m.w === m.a ? '<b>' + nm(m.a) + '</b>' : nm(m.a)} vs ${m.w === m.b && m.b != null ? '<b>' + nm(m.b) + '</b>' : nm(m.b)}${m.b != null ? `<em>${m.s[0]}–${m.s[1]}</em>` : ''}</li>`;
+    }).join('')).join('')}</ul>
+    ${isHost ? `<div class="row"><button class="go" id="again">Play again</button><button id="lobby">Back to lobby</button></div>`
+             : `<p class="sub">Waiting for the host…</p>`}`;
+  if (champ) loadSprites().then(L => document.getElementById('champ').getContext('2d').drawImage(L.fighterPicture(champ.fighter, champ.slot, 'block'), 0, 12, 168, 168)).catch(e => console.error(e));
   if (isHost) {
     document.getElementById('again').onclick = () => send({ t: 'start' });
     document.getElementById('lobby').onclick = () => send({ t: 'lobby' });

@@ -27,6 +27,30 @@ The host can switch the lobby's **Game mode** from Freeze tag to **Hide clay**:
 
 The round ends when time runs out or every sculpture has been found; the highest score wins. The timings and points are at the top of `public/shared.js`.
 
+## Arena fights (the third game mode)
+
+Pick **Arena fights** as the lobby's game mode.
+
+- **Make your fighter** (the button in the lobby): the **character editor**. A green block skeleton stands in a T-pose on a round stand: a head, a torso, hips, and on each side an upper arm (shoulder to elbow), a forearm (elbow to hand), a thigh (hip to knee) and a shin (knee to foot). **Drag body parts** onto it: a head, a snout, a neck, a chest, a belly, a pelvis, upper arms, forearms, hands, claw hands, thighs, shins, feet, claw feet and ball joints. Each one goes onto its own bone (the left or right one, whichever side you drop it on; with Mirror on, the other side gets one too), sized to fit, and the Size slider makes it thicker or thinner. The **proportion** sliders make the arms, legs and body longer or shorter, and everything on them stretches to fit, so you can make a lanky long-limbed creature or a stubby one. Or **drag any shape** from the palette onto it (or click a shape, then click the character): flat and tall boxes, rounded boxes, cylinders, balls, cones, capsules and rings, plus curly hair, long hair, eyes and horns (up to 90 shapes). Each shape sticks to the body part you drop it on and moves with it; a shape dropped on a bone lines up along it (a capsule on the upper arm becomes the upper arm). Shapes don't blend: each part keeps its own shape, with a clean edge where it meets the next, like a jointed figure, and the body bends at the joints. Pick a color, a **Size**, **Mirror** (a matching shape on the other side: make one arm, get both) and **Subtract** (cut away instead of adding); these apply to the next shape, or to the shape you've picked. Click a shape on the character to pick it, then drag its handles to move, turn or stretch it. Undo with Ctrl+Z. The preview buttons play your fighter's moves. Fighters move like real fighters: they bounce lightly in their guard and breathe, walk with their hands up while the hips sway and the shoulders turn against them, and every move has a wind-up, a strike timed to land with the hit, and a recovery (jabs come from the left and right hands in turn, each winding back before the shoulder drives it out; a hook kick raises the leg out to the side, straightens it past the target and whips the heel back across; a jump tucks the knees high; a knock-out staggers back and falls flat). Poses ease into each other instead of snapping. A fighter with no shapes fights as the block skeleton. The **Character abilities** tab picks your **special move**:
+  - **Kamehameha**: cup your hands at your side, twisted back, as a blue ball of energy grows between them, then thrust both palms forward and fire a blue beam. Quick to charge.
+  - **Final Flash**: fling your arms wide with a yellow ball in each palm, then slam your palms together in front and fire a huge yellow beam. Slower to charge, but wider and stronger.
+
+  You stand still while you charge and fire, and a hit while you're charging stops it. A beam shoots straight ahead for a moment and hits once; **jump** over it to dodge it.
+
+  Your fighter is saved on your device. Fighters are normal smooth-shaded 3D characters (not clay), in every view: the top-down view plays pictures of your 3D fighter, taken in every move.
+- **Try it out** (in the editor, or next to Make your fighter in the lobby): your fighter, as it is right now, in a plain white room with a training dummy. Walk with WASD, jab (J or left-click, left and right hands in turn), hook kick (K or right-click), block (Shift), dodge (C), jump (Space) and use your special (F; its meter fills by itself here). The dummy shows the damage of each hit and gets back up after a knock-out. Esc (or Back to editor) goes back to building.
+- Everyone goes into a **knockout bracket** in a random order (with an odd number of players, someone gets a bye). One match at a time: the two fighters go into the ring (a plain white room with a low barrier around it) and everyone else watches from the stands. A match is **best of 3 rounds**; a round lasts 60 seconds and ends with a knock-out, or when time runs out (then whoever has more health takes it). The winner goes through, until one **champion** is left.
+- **Fighting:** you always face your opponent.
+  - **Jab** (left-click or J): quick, 7 damage; left and right hands in turn.
+  - **Hook kick** (right-click or K): slower, 14 damage, knocks them back.
+  - **Block** (hold Shift): you take only a quarter of the damage from the front, but you move slowly.
+  - **Dodge** (C): a quick roll that nothing can hit.
+  - **Special** (F): when your meter is full. Dealing and taking hits fills it.
+  - **Jump** (Space): fighters jump high (well over a beam), knees tucked.
+  - On a phone, use the buttons in the corner (double-tap to jump).
+
+All the fight numbers (damage, reach, speeds, round length) are in `Shared.FIGHT` near the top of `public/shared.js`.
+
 ## Maps
 
 The host picks the map in the lobby:
@@ -84,6 +108,7 @@ It prints a `https://something.trycloudflare.com` address. Open that address you
 - `public/client.js`: lobby screens, the top-down view (2D canvas), line-of-sight lighting, the clay man and woman characters, heartbeat sound, HUD, keyboard/touch input. Vision settings (`R_NEAR`, `R_FAR`, `CONE`) are at the top. Your own movement runs locally so it feels instant, and the server checks it so nobody can walk through walls or teleport.
 - `public/view3d.js`: the first- and third-person views (with the characters modelled in clay), drawn with Three.js (served from `node_modules`, so run `npm install`). It only loads when someone picks a 3D view.
 - `public/clay.js`: the clay look used by the Office and the Mall in 3D: rounded, slightly lumpy shapes, a matte clay material with dents and fingerprints, soft contact shadows (ambient occlusion, skipped on phones), and helpers for placing pieces and building walls. `public/office3d.js` and `public/mall3d.js` build the two clay maps with it (`office2d.js` and `mall2d.js` draw them top-down). The library is the same: `library3d.js` and `library2d.js`.
+- `public/fighter.js`, `public/fighter3d.js`, `public/fightersprite.js` and `public/fightui.js`: arena fights: the saved fighter, building a fighter from its shapes on a skeleton (`public/sdfmesh.js` joins the shapes into one skinned body) (with a pose for every move), its pictures for the top-down view, and the character editor; `public/practice.js` is the Try it out room. `public/arena2d.js` and `public/arena3d.js` draw the arena.
 - `public/sculpt.js`: the hide-clay sculpting screen; `public/clayobj.js` turns a sculpture's data into a clay model (and little pictures of it for the top-down view).
 - `public/shared.js`: map generation (rooms, hallways and furniture), pathfinding and collision, used by both sides. Maps with two real floors (the library) have a second grid for the floor above and walkable staircases (`ramps`); everyone has a floor, and you're upstairs once you're past halfway up a staircase.
 
