@@ -96,6 +96,25 @@ function addTagBits(model, role) {
   return { ring, ice };
 }
 
+// key escape's bot: a black ghost, facing +x like the people. A sheet (a round head, sides that flare out, a wavy
+// hem) with two glowing red eyes, and a dim red light of its own so you catch it at the edge of your headlight.
+function makeGhost() {
+  const g = new THREE.Group(), pts = [];
+  for (let i = 0; i <= 10; i++) { const a = i / 10 * Math.PI / 2; pts.push(new THREE.Vector2(Math.max(0.001, 0.3 * Math.sin(a)), 0.95 + 0.3 * Math.cos(a))); }
+  pts.push(new THREE.Vector2(0.33, 0.6), new THREE.Vector2(0.37, 0.3), new THREE.Vector2(0.39, 0.18));
+  const geo = new THREE.LatheGeometry(pts, 40), pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) if (pos.getY(i) < 0.2) pos.setY(i, pos.getY(i) + 0.06 * Math.sin(6 * Math.atan2(pos.getZ(i), pos.getX(i)))); // the hem
+  geo.computeVertexNormals();
+  const sheet = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: '#000000', roughness: 0.9, metalness: 0, emissive: '#0a0003', side: THREE.DoubleSide, transparent: true, opacity: 0.96 }));
+  sheet.castShadow = true;
+  const eyeMat = glow('#ff1a1a'), eyes = new THREE.Group();
+  for (const z of [-0.09, 0.09]) { const e = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), eyeMat); e.scale.set(0.6, 1.4, 1); e.position.set(0.29, 1.0, z); eyes.add(e); }
+  const light = new THREE.PointLight('#ff2a2a', 0.5, 1.4, 1); light.position.set(0.7, 1.0, 0); // (out in front, so it lights the floor and walls, not the sheet)
+  g.add(sheet, eyes, light);
+  g.userData = { sheet, eyes: { material: eyeMat } };
+  return g;
+}
+
 // a noise trap lying on the floor, in clay (centred on its tile; the group sits on the floor)
 function makeTrap(t) {
   const g = new THREE.Group(), seed = t.id * 7.3;
@@ -456,22 +475,19 @@ export function createView3D(canvas) {
     }
     const E = S.esc;
     while (E.bots.length < e.bots.length) {
-      const model = makePerson('man', '#4a5060', 5), bits = addTagBits(model, 'it'), tag = nameSprite('BOT', '#ff6b6b');
-      const visor = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.24), glow('#ff3b3b')); visor.position.set(0.15, 0.95, 0); visor.userData.noFade = true;
-      model.userData.body.add(visor);
-      scene.add(model, tag); E.bots.push({ model, tag, ...bits });
+      const model = makeGhost(), tag = nameSprite('BOT', '#ff6b6b');
+      scene.add(model, tag); E.bots.push({ model, tag });
     }
     E.bots.forEach((o, i) => {
       const b = e.bots[i];
       o.model.visible = o.tag.visible = !!b && b.show && onFloor(b);
       if (!b) return;
       const px = b.x / TILE, py = (b.h || 0) * S.SH, pz = b.y / TILE;
-      o.model.position.set(px, py, pz); o.model.rotation.y = -b.a; o.tag.position.set(px, py + 1.32, pz);
-      const { body, legs, arms } = o.model.userData;
-      arms[0].rotation.z = -Math.sin(b.walk) * 0.5; arms[1].rotation.z = Math.sin(b.walk) * 0.5;
-      legs[0].rotation.z = Math.sin(b.walk) * 0.6; legs[1].rotation.z = -Math.sin(b.walk) * 0.6;
-      body.position.y = b.walk ? Math.abs(Math.cos(b.walk)) * 0.04 : 0;
-      o.ring.material.opacity = 0.55 + 0.45 * Math.sin(t * 6);
+      const float = 0.08 + Math.sin(t * 2.5 + i) * 0.05; // it floats, bobbing
+      o.model.position.set(px, py + float, pz); o.model.rotation.y = -b.a; o.tag.position.set(px, py + 1.45 + float, pz);
+      const { sheet, eyes } = o.model.userData;
+      sheet.rotation.y = t * 0.8; // (turning the sheet makes its wavy hem ripple)
+      eyes.material.color.setRGB(1, 0.1 + 0.08 * Math.sin(t * 9), 0.1);
     });
     E.key.visible = !!(e.key && e.key.show && onFloor(e.key));
     if (e.key) { E.key.position.set(e.key.x / TILE, (e.key.fl || 0) * S.SH + 0.45 + Math.sin(t * 3) * 0.06, e.key.y / TILE); E.key.rotation.y = t * 2; }
