@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { makeFighter, poseFighter } from './fighter3d.js';
 
-const FRAMES = { idle: 1, walk: 8, punch: 4, punchL: 4, kick: 5, block: 1, dodge: 6, stun: 3, ko: 3, kamehameha: 6, finalflash: 6, jump: 3 };
+const FRAMES = { idle: 1, walk: 8, punch: 4, punchL: 4, kick: 5, block: 1, dodge: 6, stun: 3, ko: 3, kamehameha: 6, finalflash: 6, jump: 3, hit: 3, blockhit: 2, win: 4, juggle: 1, getup: 3 };
 const PX = 128; // each picture is PX x PX; the fighter's feet are near the bottom
 let R = null, scene = null, cam = null;
 function setup() {

@@ -9,6 +9,7 @@ import { buildLibrary, updateLibrary } from './library3d.js';
 import { clay, rbox, blob, clayifyScene, createClayFX, resetClay } from './clay.js';
 import { makeSculpture } from './clayobj.js';
 import { makeFighter, poseFighter, makeBeam, setBeam } from './fighter3d.js';
+import { createFightFx } from './fightfx.js';
 import { buildArena, updateArena } from './arena3d.js';
 const SCULPTURE = 0.5; // hide clay: how big a sculpture is in the world (its longest side, in tiles)
 
@@ -296,7 +297,7 @@ export function createView3D(canvas) {
 
     // arena fights: the special beams (two at most at once)
     const beams = [makeBeam(), makeBeam()]; beams.forEach(b => scene.add(b));
-    S = { G, apt, forest, mall, library, arena, players, spot, near, traps, pings, SH, beams, sculptures: new Map() };
+    S = { G, apt, forest, mall, library, arena, players, spot, near, traps, pings, SH, beams, sculptures: new Map(), ffx: arena ? createFightFx(scene) : null, lastSpark: 0, camZoom: 0 };
 
     // the office and the mall are all clay (the people already are): a softer color grade,
     // and (on computers) soft shadows wherever things touch. It also needs a longer view, to see outside.
@@ -334,10 +335,15 @@ export function createView3D(canvas) {
       camera.lookAt(vx + Math.cos(view.a) * Math.cos(f.pitch), eye + vh + Math.sin(f.pitch), vz + Math.sin(view.a) * Math.cos(f.pitch));
     } else {
       back = Math.max(0.35, Math.min(1.9, f.backRoom / TILE - 0.25));
-      if (f.fightCam) { // fighting: further back and higher, looking down past you at your opponent
-        back = 2.4;
-        camera.position.set(vx - dir.x * back, 1.75 + vh, vz - dir.z * back);
-        camera.lookAt(vx + dir.x * 1.6, 0.45 + vh, vz + dir.z * 1.6);
+      if (f.koCam) { // a knock-out: the camera circles slowly round the two fighters, low, like a replay
+        const a = t * 0.45, cx = f.koCam.x / TILE, cz = f.koCam.y / TILE;
+        camera.position.set(cx + Math.cos(a) * 3.2, 1.1, cz + Math.sin(a) * 3.2); camera.lookAt(cx, 0.55, cz); back = 3;
+      } else if (f.fightCam) { // fighting: further back and higher, looking down past you at your opponent
+        S.camZoom += ((f.camZoom || 0) - S.camZoom) * 0.08; // (charging a beam: the camera pushes in low and close, anime style)
+        const z = S.camZoom, sh = (f.shake || 0) * 0.35, jx = (Math.random() - 0.5) * sh, jy = (Math.random() - 0.5) * sh;
+        back = 2.4 - 0.9 * z;
+        camera.position.set(vx - dir.x * back + jx, 1.75 - 0.8 * z + vh + jy, vz - dir.z * back + jx);
+        camera.lookAt(vx + dir.x * 1.6, 0.45 + 0.35 * z + vh, vz + dir.z * 1.6);
       } else {
         // with a wall right behind you the camera rises a little to look over your head
         camera.position.set(vx - dir.x * back, 1.05 + (1.9 - back) * 0.17 + vh, vz - dir.z * back);
@@ -364,7 +370,7 @@ export function createView3D(canvas) {
         o.model.traverse(c => { if (c.isMesh && !c.userData.noFade) { c.material.transparent = fade < 1; c.material.opacity = fade; } });
       }
       const { body, legs, arms } = o.model.userData;
-      if (o.model.userData.fighter) poseFighter(o.model, p.pose, p.walk); // (a fighter: punches, kicks, blocks...)
+      if (o.model.userData.fighter) { o.model.userData.stopUntil = (f.hitStop || 0) / 1000; poseFighter(o.model, p.pose, p.walk, p.move); } // (a fighter: punches, kicks, blocks, footwork...)
       else {
         arms[0].rotation.z = -Math.sin(p.walk) * 0.5; arms[1].rotation.z = Math.sin(p.walk) * 0.5;
         body.position.y = p.walk ? Math.abs(Math.cos(p.walk)) * 0.04 : 0;
@@ -407,6 +413,10 @@ export function createView3D(canvas) {
     if (S.mall) updateMall(S.mall, t);
     if (S.library) updateLibrary(S.library, t);
     if (S.arena) updateArena(S.arena, t, f.excite || 0);
+    if (S.ffx) { // hit sparks: a burst for each new hit
+      for (const s of f.sparks || []) if (s.id > S.lastSpark) { S.lastSpark = s.id; S.ffx.hit(s.x / TILE, 0.85, s.y / TILE, s.kind); }
+      S.ffx.update();
+    }
     S.beams.forEach((g, i) => {
       const b = f.beams && f.beams[i];
       if (!b) { g.visible = false; return; }

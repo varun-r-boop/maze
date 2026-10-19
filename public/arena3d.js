@@ -1,5 +1,6 @@
 // The fight arena in 3D: a plain white room, softly lit, with a low white barrier round the fighting area.
 import * as THREE from 'three';
+import { floorTiles } from './fightfx.js';
 
 const Sh = window.Shared;
 const { COLS, ROWS } = Sh.C;
@@ -17,7 +18,7 @@ export function buildArena(scene, G) {
   Object.assign(sun.shadow.camera, { left: -26, right: 26, top: 26, bottom: -26, near: 1, far: 80 });
   scene.add(sun, sun.target);
   // floor and ceiling
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(COLS, ROWS).rotateX(-Math.PI / 2), white);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(COLS, ROWS).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: floorTiles(COLS, ROWS), roughness: 0.85 })); // (white tiles)
   floor.position.set(COLS / 2, 0, ROWS / 2); floor.receiveShadow = true; scene.add(floor);
   // the walls (one box per tile, drawn together) and the barrier (low, with a pale grey top)
   const place = (list, geo, mat, y) => {

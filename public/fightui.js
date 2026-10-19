@@ -75,7 +75,7 @@ export function openBuilder(host, start, onSave, opts = {}) {
       </div>
       <div class="ce-view"><canvas></canvas>
         <p class="ce-hint"></p>
-        <div class="ce-anim">${['walk', 'punch', 'kick', 'block', 'jump', 'special'].map(a => `<button data-anim="${a}">${a[0].toUpperCase() + a.slice(1)}</button>`).join('')}</div>
+        <div class="ce-anim">${['walk', 'punch', 'kick', 'block', 'jump', 'special', 'hit', 'win'].map(a => `<button data-anim="${a}">${a[0].toUpperCase() + a.slice(1)}</button>`).join('')}</div>
       </div>
     </div>`;
   const $ = s => host.querySelector(s), $$ = s => host.querySelectorAll(s);

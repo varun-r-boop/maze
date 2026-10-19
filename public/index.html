@@ -109,6 +109,23 @@
   .ce-anim button { padding: 6px 12px; font-size: 13px; background: rgba(20,20,35,.8); }
   .ce-try { width: 100%; margin-top: 10px; padding: 10px; font-weight: 700; background: #2f6f3a; border-color: #43a047; }
   .ce.practicing .ce-side, .ce.practicing .ce-hint, .ce.practicing .ce-anim { display: none; }
+  /* anime touches in a fight: an impact frame (the screen flashes inverted) and speed lines rushing in */
+  .fx-impact { position: absolute; inset: 0; background: #fff; mix-blend-mode: difference; pointer-events: none; z-index: 30; }
+  .fx-speed { position: absolute; inset: -20%; pointer-events: none; z-index: 29; opacity: .75; mix-blend-mode: difference; /* (white lines, inverted: black on a light scene, white on a dark one) */
+    background: repeating-conic-gradient(from 0deg at 50% 50%, transparent 0deg 3deg, #fff 3deg 3.5deg, transparent 3.5deg 7.3deg);
+    -webkit-mask: radial-gradient(circle at 50% 50%, transparent 28%, #000 62%); mask: radial-gradient(circle at 50% 50%, transparent 28%, #000 62%);
+    animation: fxspeed .1s steps(2) infinite; }
+  @keyframes fxspeed { to { transform: rotate(3deg) scale(1.04); } }
+  .fx-letterbox { position: absolute; inset: 0; pointer-events: none; z-index: 28; }
+  .fx-letterbox i { position: absolute; left: 0; right: 0; height: 11%; background: #000; animation: fxbar .25s ease-out both; }
+  .fx-letterbox i:first-child { top: 0; transform-origin: top; } .fx-letterbox i:last-child { bottom: 0; transform-origin: bottom; }
+  .fx-letterbox.out i { animation: fxbarout .3s ease-in both; }
+  @keyframes fxbar { from { transform: scaleY(0); } } @keyframes fxbarout { to { transform: scaleY(0); } }
+  body > .fx-impact, body > .fx-speed, body > .fx-letterbox { position: fixed; }
+  .pr-combo { position: absolute; left: 24px; top: 70px; font: italic 900 20px system-ui; color: #fff; -webkit-text-stroke: 1.5px #1a0a00; opacity: 0; transform: rotate(-7deg); pointer-events: none; }
+  .pr-combo b { font-size: 46px; color: #ffd54f; }
+  .pr-combo.show { opacity: 1; animation: comboPop .18s ease-out; } @keyframes comboPop { from { transform: rotate(-7deg) scale(1.5); } }
+  .pr { overflow: hidden; }
   /* "Try it out": the practice room's overlay */
   .pr { position: absolute; inset: 0; pointer-events: none; color: #2a2d33; }
   .pr > * { pointer-events: auto; }

@@ -4,6 +4,7 @@
 // with the same moves and numbers as a real fight (Shared.FIGHT).
 import * as THREE from 'three';
 import { makeFighter, poseFighter, dummyParts, makeBeam, setBeam } from './fighter3d.js';
+import { createFightFx, impactFrame, speedLines, letterbox, floorTiles } from './fightfx.js';
 
 const Sh = window.Shared, FT = Sh.FIGHT, U = 1 / Sh.C.TILE; // (the fight numbers are in pixels; here 1 unit = 1 tile)
 const ROOM = 6; // half the width of the room
@@ -17,7 +18,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
   sun.shadow.mapSize.set(1024, 1024); sun.shadow.radius = 4; Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8, near: 1, far: 30 });
   scene.add(sun);
   const white = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.9 }), wallM = new THREE.MeshStandardMaterial({ color: '#f4f4f2', roughness: 0.95 });
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM * 2, ROOM * 2).rotateX(-Math.PI / 2), white); floor.receiveShadow = true; scene.add(floor);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM * 2, ROOM * 2).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: floorTiles(ROOM * 2, ROOM * 2), roughness: 0.85 })); floor.receiveShadow = true; scene.add(floor); // (white tiles)
   for (const [x, z, ry] of [[0, -ROOM, 0], [0, ROOM, 0], [-ROOM, 0, Math.PI / 2], [ROOM, 0, Math.PI / 2]]) {
     const w = new THREE.Mesh(new THREE.BoxGeometry(ROOM * 2, 2.6, 0.2), wallM); w.position.set(x, 1.3, z); w.rotation.y = ry; w.receiveShadow = true; scene.add(w);
   }
@@ -29,6 +30,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
   const S = { x: -1.4, z: 0, a: 0, walk: 0, act: null, block: false, dodgeUntil: 0, dodgeCd: 0, jumpT: -1, meter: 100, jab: 'L' };
   const D = { x: 1.4, z: 0, hp: FT.HP, stunUntil: 0, koUntil: 0, kbx: 0, kbz: 0, kbUntil: 0 };
   const beams = [], beamMesh = makeBeam(); scene.add(beamMesh);
+  const ffx = createFightFx(scene); let zoom = 0, shake = 0; // (hit sparks; the camera pushing in for a beam, and shaking on big hits)
 
   // ---- the overlay: the dummy's health, your special meter, how to play, a way back, and buttons on phones
   const ui = document.createElement('div'); ui.className = 'pr';
@@ -37,13 +39,14 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
       <div><span>TRAINING DUMMY</span><div class="pr-bar pr-hp"><i></i></div></div>
       <div><span>YOUR SPECIAL (${Sh.SPECIAL_NAMES[fighter.special]})</span><div class="pr-bar pr-mt"><i></i></div></div>
     </div>
-    <p class="pr-help">${isTouch ? 'Drag to move · buttons to fight' : 'W A S D move · J or click: punch · K or right-click: kick · hold Shift: block · C: dodge · F: special · Space: jump'}</p>
+    <p class="pr-help">${isTouch ? 'Drag to move · buttons to fight' : 'W A S D move · J or click: jab · K or right-click: hook kick · hold Shift: block · C: duck · F: special · Space: jump'}</p>
     <button class="pr-exit">◀ Back to editor</button>
     ${isTouch ? `<div class="pr-pad">${['punch', 'kick', 'block', 'dodge', 'special', 'jump'].map(k => `<button data-pr="${k}">${k.toUpperCase()}</button>`).join('')}</div>` : ''}`;
   host.appendChild(ui);
   const hpBar = ui.querySelector('.pr-hp i'), mtBar = ui.querySelector('.pr-mt i');
   ui.querySelector('.pr-exit').onclick = () => onExit();
   const pops = [];
+  const comboEl = document.createElement('div'); comboEl.className = 'pr-combo'; ui.appendChild(comboEl); let comboAt = -1e9; // (the combo counter)
   const pop = (text, color, big) => { const el = document.createElement('div'); el.className = 'pr-pop'; el.textContent = text; el.style.color = color; if (big) el.style.fontSize = '30px'; ui.appendChild(el); pops.push({ el, t0: performance.now(), x: D.x, z: D.z }); };
 
   // ---- controls
@@ -90,11 +93,17 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
   function hitDummy(kind, dirx, dirz) {
     const now = performance.now(), spec = FT[kind];
     if (now < D.koUntil) return;
-    D.hp = Math.max(0, D.hp - spec.dmg); S.meter = Math.min(100, S.meter + spec.dmg * FT.METER_DEAL);
-    pop(`${{ punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH' }[kind]} -${spec.dmg}`, kind === 'punch' ? '#e0a400' : '#ff7a1a', kind !== 'punch');
-    D.stunUntil = now + (spec.stun || 0.15) * 1000;
-    if (spec.kb) { D.kbx = dirx * spec.kb * U; D.kbz = dirz * spec.kb * U; D.kbUntil = now + 260; }
-    if (D.hp <= 0) { D.koUntil = now + 1800; pop('K.O.!', '#e53935', true); }
+    const cb = Sh.fightCombo(S, D, kind, now / 1000), dmg = Math.round(spec.dmg * cb.mult); // (combos, launches and juggles: the same rules as a real fight)
+    D.hp = Math.max(0, D.hp - dmg); S.meter = Math.min(100, S.meter + dmg * FT.METER_DEAL);
+    pop(`${{ punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH' }[kind]} -${dmg}`, kind === 'punch' ? '#e0a400' : '#ff7a1a', kind !== 'punch');
+    if (cb.launch) pop('LAUNCH!', '#ff1744', true);
+    if (cb.n >= 2) { comboEl.innerHTML = `<b>${cb.n}</b> HITS`; comboEl.classList.remove('show'); void comboEl.offsetWidth; comboEl.classList.add('show'); comboAt = now; }
+    D.stunUntil = now + (spec.stun || 0.15) * 1000; D.hitAt = now; D.hitK = kind; D.hitSide = S.act && S.act.side; // (it reacts to the hit)
+    ffx.hit(D.x, 0.85, D.z, kind); me.userData.stopUntil = dummy.userData.stopUntil = now / 1000 + (FT.HIT_STOP[kind] || 0.06); // (a burst, and a split-second freeze)
+    if (kind !== 'punch') { impactFrame(ui, kind === 'kick' ? 50 : 90); shake = kind === 'kick' ? 0.25 : 0.45; }
+    const kb = D.air && !spec.beam ? (cb.launch ? 220 : 130) : spec.kb || 0;
+    if (kb) { D.kbx = dirx * kb * U; D.kbz = dirz * kb * U; D.kbUntil = now + 260; }
+    if (D.hp <= 0) { D.koUntil = now + 1800; pop('K.O.!', '#e53935', true); letterbox(ui, 1600); }
   }
 
   // ---- every frame
@@ -127,7 +136,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
       if (!S.act.done && el >= spec.wind) {
         S.act.done = true;
         if ((S.act.k === 'punch' || S.act.k === 'kick') && dist <= spec.range * U) hitDummy(S.act.k, tx / dist, tz / dist); // (you always face the dummy)
-        else if (spec.beam) beams.push({ x: S.x + c * 0.4, z: S.z + s * 0.4, dx: c, dz: s, a: S.a, k: S.act.k, t0: now, hit: false });
+        else if (spec.beam) { letterbox(ui, spec.beam * 1000 + 300); beams.push({ x: S.x + c * 0.4, z: S.z + s * 0.4, dx: c, dz: s, a: S.a, k: S.act.k, t0: now, hit: false }); speedLines(ui, spec.beam * 1000 + 200, S.act.k === 'finalflash' ? '#fff3a0' : '#bfefff'); }
       }
       if (now - S.act.t0 > S.act.dur) S.act = null;
     }
@@ -143,18 +152,26 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
     // the dummy: pushed back by big hits, back on its feet after a knock-out; the meter fills up by itself too
     if (now < D.kbUntil) { D.x += D.kbx * dt; D.z += D.kbz * dt; D.x = Math.max(-ROOM + 0.6, Math.min(ROOM - 0.6, D.x)); D.z = Math.max(-ROOM + 0.6, Math.min(ROOM - 0.6, D.z)); }
     if (D.hp <= 0 && now > D.koUntil) { D.hp = FT.HP; pop('Back up!', '#43a047'); }
+    if (Sh.fightAir(D, dt)) D.getupAt = now; // (a launched dummy falls, lands and gets up)
+    if (now - comboAt > 1400) comboEl.classList.remove('show');
     S.meter = Math.min(100, S.meter + dt * 12);
     if (S.jumpT >= 0 && (S.jumpT += dt) >= FT.JUMP_T) S.jumpT = -1;
 
     // ---- drawing: poses, positions, the camera behind you, the overlay
     const myPose = now < S.dodgeUntil ? { k: 'dodge', p: 1 - (S.dodgeUntil - now) / (FT.DODGE.t * 1000) } : S.act ? { k: S.act.k, p: (now - S.act.t0) / S.act.dur, side: S.act.side } : S.jumpT >= 0 ? { k: 'jump', p: S.jumpT / FT.JUMP_T } : S.block ? { k: 'block', p: 1 } : null;
-    poseFighter(me, myPose, myPose ? 0 : S.walk);
+    poseFighter(me, myPose || (now < D.koUntil ? { k: 'win', p: 0.5 } : null), myPose ? 0 : S.walk, { f: fwd, s: side }); // (knock it out: celebrate)
     me.position.set(S.x, S.jumpT >= 0 ? Math.sin(Math.PI * S.jumpT / FT.JUMP_T) * FT.JUMP_H : 0, S.z); me.rotation.y = -S.a;
-    const dPose = now < D.koUntil ? { k: 'ko', p: 1 - (D.koUntil - now) / 1800 } : now < D.stunUntil ? { k: 'stun', p: (now % 1000) / 1000 } : null;
+    const hitE = (now - (D.hitAt || -1e9)) / 1000, hitD = FT.HIT_T[D.hitK] || 0.3;
+    const guE = (now - (D.getupAt || -1e9)) / 1000;
+    const dPose = now < D.koUntil && !D.air ? { k: 'ko', p: 1 - (D.koUntil - now) / 1800 } : D.air ? { k: 'juggle', p: 0 } : guE < FT.JUGGLE.getup ? { k: 'getup', p: guE / FT.JUGGLE.getup } : hitE < hitD ? { k: 'hit', p: hitE / hitD, kind: D.hitK, side: D.hitSide } : now < D.stunUntil ? { k: 'stun', p: (now % 1000) / 1000 } : null;
     poseFighter(dummy, dPose, 0);
-    dummy.position.set(D.x, 0, D.z); dummy.rotation.y = -Math.atan2(S.z - D.z, S.x - D.x);
+    dummy.position.set(D.x, D.air ? D.air.y : 0, D.z); dummy.rotation.y = -Math.atan2(S.z - D.z, S.x - D.x);
     // (over your shoulder, so you can see the dummy past yourself)
-    camera.position.set(S.x - c * 2.4 - s * 0.9, 1.6, S.z - s * 2.4 + c * 0.9); camera.lookAt(S.x + c * 1.2 + s * 0.2, 0.55, S.z + s * 1.2 - c * 0.2);
+    zoom += ((S.act && FT[S.act.k].beam ? 1 : 0) - zoom) * Math.min(1, dt * 5); shake = Math.max(0, shake - dt);
+    const jx = (Math.random() - 0.5) * shake * 0.35, jy = (Math.random() - 0.5) * shake * 0.35, bk = 2.4 - 0.9 * zoom; // (a beam: push in low and close)
+    camera.position.set(S.x - c * bk - s * 0.9 * (1 - 0.4 * zoom) + jx, 1.6 - 0.75 * zoom + jy + me.position.y * 0.7, S.z - s * bk + c * 0.9 * (1 - 0.4 * zoom) + jx);
+    camera.lookAt(S.x + c * 1.2 + s * 0.2, 0.55 + 0.3 * zoom + me.position.y * 0.8, S.z + s * 1.2 - c * 0.2); // (following you up into a jump)
+    ffx.update();
     renderer.render(scene, camera);
     hpBar.style.width = `${D.hp / FT.HP * 100}%`; hpBar.style.background = D.hp > 50 ? '#43a047' : D.hp > 25 ? '#fdd835' : '#e53935';
     mtBar.style.width = `${S.meter}%`; mtBar.style.background = S.meter >= 100 ? '#fb8c00' : '#ffb74d';

@@ -208,14 +208,31 @@ export function makeFighter(f) {
   return root;
 }
 
-// Energy balls in the hands (hidden until a special charges), on the forearm bones at the hand
+let auraTex = null;
+function auraTexture() { // a tall glow with flame tongues licking up from it
+  if (auraTex) return auraTex;
+  const c = document.createElement('canvas'); c.width = 64; c.height = 128; const g = c.getContext('2d');
+  g.save(); g.translate(32, 78); g.scale(1, 1.7);
+  const grd = g.createRadialGradient(0, 0, 4, 0, 0, 30); grd.addColorStop(0, 'rgba(255,255,255,.9)'); grd.addColorStop(0.5, 'rgba(255,255,255,.45)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.beginPath(); g.arc(0, 0, 30, 0, Math.PI * 2); g.fill(); g.restore();
+  for (const [x, h] of [[18, 60], [32, 76], [46, 58], [25, 50], [40, 52]]) {
+    const f = g.createLinearGradient(0, 100 - h, 0, 100); f.addColorStop(0, 'rgba(255,255,255,0)'); f.addColorStop(1, 'rgba(255,255,255,.55)');
+    g.fillStyle = f; g.beginPath(); g.moveTo(x - 7, 100); g.quadraticCurveTo(x - 4, 100 - h * 0.6, x, 100 - h); g.quadraticCurveTo(x + 4, 100 - h * 0.6, x + 7, 100); g.fill();
+  }
+  auraTex = new THREE.CanvasTexture(c); auraTex.colorSpace = THREE.SRGBColorSpace;
+  return auraTex;
+}
+// Energy balls in the hands (hidden until a special charges), on the forearm bones at the hand; and the aura
 export function addOrbs(bones, root) {
   const H = bones.hips.userData;
+  const aura = new THREE.Sprite(new THREE.SpriteMaterial({ map: auraTexture(), color: '#5fd0ff', transparent: true, depthWrite: false })); // (normal blending: additive glow vanishes against the white arena)
+  aura.position.y = H.height * 0.5; aura.visible = false; aura.userData = { keepMaterial: true, glow: true, noFade: true };
+  root.add(aura); root.userData.aura = aura;
   root.userData.orbs = ['foreL', 'foreR'].map(b => {
     const m = () => new THREE.MeshBasicMaterial({ color: '#5fd0ff', transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
     const o = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), m()), halo = new THREE.Mesh(new THREE.SphereGeometry(1.9, 16, 12), m());
-    halo.material.opacity = 0.35; o.add(halo); o.position.set(0.04, -0.25 * H.prop.arm, 0); o.visible = false;
-    o.traverse(x => { x.userData.keepMaterial = true; x.userData.glow = true; }); bones[b].add(o);
+    halo.material.opacity = 0.35; halo.material.blending = THREE.NormalBlending; o.add(halo); o.position.set(0.04, -0.25 * H.prop.arm, 0); o.visible = false;
+    o.traverse(x => { x.userData.keepMaterial = true; x.userData.glow = true; x.userData.noFade = true; }); bones[b].add(o);
     return o;
   });
 }
@@ -223,7 +240,7 @@ export function addOrbs(bones, root) {
 // length), a burst at the hands and a big ball at its head. setBeam() shapes it for a moment of its life.
 export function makeBeam() {
   const g = new THREE.Group(), tube = r => new THREE.CylinderGeometry(r, r, 1, 20, 1, true).rotateZ(-Math.PI / 2).translate(0.5, 0, 0);
-  const glow = o => new THREE.MeshBasicMaterial({ color: '#5fd0ff', transparent: true, opacity: o, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const glow = o => new THREE.MeshBasicMaterial({ color: '#5fd0ff', transparent: true, opacity: o, depthWrite: false, side: THREE.DoubleSide });
   const core = new THREE.Mesh(tube(0.06), new THREE.MeshBasicMaterial({ color: '#ffffff' })), halo = new THREE.Mesh(tube(0.15), glow(0.65)), outer = new THREE.Mesh(tube(0.28), glow(0.25));
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), glow(0.6)), muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 12), glow(0.7));
   g.add(core, halo, outer, head, muzzle); g.userData = { core, halo, outer, head, muzzle }; g.visible = false;
@@ -260,8 +277,10 @@ function kf(p, ...k) {
 const TAU = Math.PI * 2;
 // when a special fires, as a share of the whole move (from the fight numbers)
 const fireAt = k => { const s = window.Shared && window.Shared.FIGHT[k]; return s ? s.wind / Math.max(s.cd, s.wind + 0.05) : 0.5; };
-export function poseFighter(model, pose, walk) {
+// move: which way you're stepping, relative to where you face ({ f: forward, s: to your right }); walk: the step cycle
+export function poseFighter(model, pose, walk, move) {
   const U = model.userData, B = U.bones, live = !!U.live, now = live ? performance.now() / 1000 : 0;
+  if (live && U.stopUntil && now < U.stopUntil) return; // (hit-stop: frozen mid-pose for a split second as a hit lands)
   const k = pose && pose.k;
   let p = pose ? Math.min(1, Math.max(0, pose.p || 0)) : 0;
   if (live) { // (a knock-out plays its own fall, from when it starts)
@@ -270,38 +289,49 @@ export function poseFighter(model, pose, walk) {
   const R = {}; for (const b in B) R[b] = [0, 0, 0];
   let hy = 0.45, hx = 0, rate = 16; // (rate: how quickly it eases into this pose)
 
-  if (walk) { // walking in a fighting stance: a real stride, the hips sway and turn, the shoulders turn against them
-    const sn = Math.sin(walk), cs = Math.cos(walk);
-    R.legL[2] = 0.08 + sn * 0.5; R.shinL[2] = -(0.15 + Math.max(0, cs) * 0.95); // (the knee folds as the leg swings through)
-    R.legR[2] = 0.08 - sn * 0.5; R.shinR[2] = -(0.15 + Math.max(0, -cs) * 0.95);
-    R.hips = [0.05 * cs, -0.16 * sn, 0]; R.torso = [-0.03 * cs, -0.1 + 0.24 * sn, -0.12]; R.head = [0, -0.08 * sn + 0.1, 0.1];
-    R.armL = [-0.15, 0, 0.4 - 0.2 * sn]; R.foreL[2] = 1.7 + 0.15 * sn; R.armR = [0.15, 0, 0.25 + 0.2 * sn]; R.foreR[2] = 1.9 - 0.15 * sn;
-    hy = 0.448 + 0.014 * Math.cos(2 * walk); // (highest as the legs pass, lowest with both feet down)
-  } else { // the guard: knees soft, one foot forward, fists up by the chin, bouncing lightly on the toes
-    const bt = now * TAU * 1.6, bob = Math.sin(bt), br = Math.sin(now * TAU * 0.35);
-    R.legL[2] = 0.25; R.shinL[2] = -0.42 - 0.06 * bob; R.legR[2] = -0.12; R.shinR[2] = -0.32 - 0.06 * bob;
-    R.armL = [-0.15, 0, 0.36 + 0.04 * Math.sin(bt + 1)]; R.foreL[2] = 1.75; R.armR = [0.15, 0, 0.21 + 0.04 * Math.sin(bt + 2)]; R.foreR[2] = 1.95;
-    R.torso = [0, -0.1 + 0.03 * br, -0.06 + 0.02 * br]; R.head = [0, 0.1, 0.06 - 0.02 * br]; // (breathing; the head looks at the opponent)
-    hy = 0.447 + 0.008 * bob;
+  if (walk) { // footwork in a fighting stance, hands up: stepping in, backing off, or shuffling sideways round them
+    const mv = move && (move.f || move.s) ? move : { f: 1, s: 0 }, ml = Math.hypot(mv.f, mv.s), fw = mv.f / ml, sw = mv.s / ml, af = Math.abs(fw), as = Math.abs(sw);
+    const dirS = sw >= 0 ? 1 : -1, w = fw >= 0 ? walk : -walk; // (backing off: the cycle runs the other way, so the feet push back)
+    const sn = Math.sin(w), cs = Math.cos(w);
+    // forward or back: a short boxer's stride, the knee folding as each leg comes through
+    R.legL = [0, 0, 0.18 + sn * 0.38 * af]; R.shinL[2] = -(0.3 + Math.max(0, cs) * 0.8 * af);
+    R.legR = [0, 0, -0.04 - sn * 0.38 * af]; R.shinR[2] = -(0.25 + Math.max(0, -cs) * 0.8 * af);
+    // sideways: the leg on that side steps out, then the other one closes up to it (never crossing)
+    const out = Math.max(0, sn) * as, close = Math.max(0, -sn) * as;
+    R.legR[0] += -dirS * 0.3 * (dirS > 0 ? out : close); R.legL[0] += -dirS * 0.3 * (dirS > 0 ? close : out);
+    R.shinR[2] -= 0.35 * (dirS > 0 ? out : close); R.shinL[2] -= 0.35 * (dirS > 0 ? close : out);
+    R.hips = [0.04 * cs * af, -0.12 * sn * af, 0]; R.torso = [0.06 * dirS * as, -0.1 + 0.18 * sn * af, fw >= 0 ? -0.13 : -0.02]; R.head = [-0.04 * dirS * as, 0.1 - 0.06 * sn * af, 0.1];
+    R.armL = [-0.15, 0, 0.4 - 0.12 * sn]; R.foreL[2] = 1.72 + 0.1 * sn; R.armR = [0.15, 0, 0.24 + 0.12 * sn]; R.foreR[2] = 1.92 - 0.1 * sn;
+    hy = 0.44 + 0.012 * Math.cos(2 * walk); // (highest as the legs pass, lowest with both feet down)
+  } else { // the guard: an anime fighting stance: wide and low, side-on and leaning in, fists up, bouncing hard on the toes
+    const bt = now * TAU * 1.8, bob = Math.sin(bt), br = Math.sin(now * TAU * 0.35), wv = Math.sin(now * 1.3);
+    R.legL = [0.12, 0, 0.38]; R.shinL[2] = -0.6 - 0.1 * bob; R.legR = [-0.12, 0, -0.28]; R.shinR[2] = -0.5 - 0.1 * bob;
+    R.armL = [-0.2, 0, 0.5 + 0.05 * Math.sin(bt + 1)]; R.foreL[2] = 1.85; R.armR = [0.25, 0, 0.15 + 0.05 * Math.sin(bt + 2)]; R.foreR[2] = 2.1;
+    R.torso = [0.04 * wv, -0.25 + 0.03 * br, -0.16 + 0.02 * br]; R.head = [0.05 * Math.sin(now * 1.3 + 0.6), 0.22, 0.14 - 0.02 * br]; // (breathing; eyes locked on the opponent)
+    hy = 0.425 + 0.014 * bob;
   }
 
   // (energy balls in the hands while a special charges: left, right)
-  let oL = 0, oR = 0;
+  let oL = 0, oR = 0, aura = 0;
+  const SM = {}; // smears: a limb stretched out at the fastest moment of a strike (bone: how much longer)
   const side = pose && pose.side === 'L' ? 'L' : 'R', sg = side === 'R' ? 1 : -1;
   // blend the guard (g) with two other positions: what the arms do while charging (c) and when firing (t)
   const mix3 = (g, cv, tv, c, t) => g * Math.max(0, 1 - c - t) + cv * c + tv * t;
   if (k === 'punch') { // a jab with the left or right hand: a small wind-back, then the arm snaps straight out, shoulder behind it
     rate = 45;
-    const e = kf(p, [0, 0], [0.08, -0.15], [0.22, 1], [0.38, 1], [1, 0]), x = Math.max(0, e), w = Math.min(0, e);
+    const e = kf(p, [0, 0], [0.08, -0.25], [0.18, 1.12], [0.24, 1], [0.4, 1], [1, 0]), x = Math.max(0, e), w = Math.min(0, e); // (a wind-up, then it snaps out past the target)
     const J = side, O = side === 'R' ? 'L' : 'R';
+    const sm = kf(p, [0.1, 0], [0.18, 1], [0.3, 0]); SM['fore' + J] = 1 + 0.4 * sm; SM['arm' + J] = 1 + 0.2 * sm;
     R['arm' + J] = [sg * (0.12 - 0.12 * x), 0, (J === 'R' ? 0.21 : 0.36) + 1.3 * x + 0.3 * w]; R['fore' + J][2] = (J === 'R' ? 1.95 : 1.75) * (1 - x) + 0.04 * x - 0.2 * w;
     R['arm' + O] = [-sg * 0.15, 0, 0.3]; R['fore' + O][2] = 1.95; // (the other fist stays up by the chin)
-    R.hips[1] = 0.1 * sg * x; R.torso[1] = -0.1 + 0.4 * sg * x; R.torso[2] = -0.06 - 0.08 * x; R.head[1] = 0.1 - 0.35 * sg * x; hx = 0.03 * x;
+    R.hips[1] = 0.1 * sg * x; R.torso[1] = -0.1 + 0.4 * sg * x; R.torso[2] = -0.06 - 0.08 * x; R.head[1] = 0.1 - 0.35 * sg * x; hx = 0.04 * x;
+    R.legL[2] += 0.12 * x; R.shinL[2] -= 0.1 * x; R.legR[2] -= 0.06 * x; R['fore' + J][1] = sg * 0.9 * x; // (the lead foot steps in; the fist turns over as it lands)
   } else if (k === 'kick') { // a hook kick: the leg rises out to the side, straightens past the target, then the heel whips back across
     rate = 35;
     const ch = kf(p, [0, 0], [0.15, 1], [0.55, 1], [0.8, 0.2], [1, 0]);
     const ex = kf(p, [0, 0], [0.1, 0], [0.2, 1], [0.26, 1], [0.34, 0.2], [0.5, 0]), hook = kf(p, [0, 0], [0.2, 0], [0.3, 1], [0.5, 1], [0.72, 0]);
-    R.legR = [-0.6 * ch * (1 - hook) + 0.25 * hook * ch, 0, -0.12 + 1.55 * ch]; R.shinR[2] = (-0.3 - 1.4 * ch) * (1 - ex) - 0.05 * ex;
+    R.legR = [-0.6 * ch * (1 - hook) + 0.25 * hook * ch, 0, -0.12 + 1.55 * ch];
+    const sm = kf(p, [0.14, 0], [0.22, 1], [0.34, 0.3], [0.42, 0]); SM.shinR = 1 + 0.35 * sm; SM.legR = 1 + 0.15 * sm; R.shinR[2] = (-0.3 - 1.4 * ch) * (1 - ex) - 0.05 * ex;
     R.legL[2] = 0.05; R.shinL[2] = -0.35 - 0.1 * ch; // (pivoting on the standing leg)
     R.hips = [0.15 * ch, -0.3 * ch + 0.45 * hook, 0.1 * ch]; R.torso = [-0.1 * ch, -0.1 - 0.3 * ch + 0.25 * hook, -0.05 + 0.4 * ch]; R.head = [0, 0.1 + 0.3 * ch - 0.35 * hook, -0.25 * ch];
     R.armL = [-0.2, 0, 0.45]; R.foreL[2] = 1.8; R.armR = [0.2 + 0.3 * hook, 0, 0.2 - 0.6 * hook]; R.foreR[2] = 1.95 - 1.1 * hook; // (the arm swings back for balance)
@@ -314,14 +344,14 @@ export function poseFighter(model, pose, walk) {
       R.armL = [mix3(-0.15, -0.6, -0.28, c, t), 0, mix3(0.36, -0.15, 1.45, c, t)]; R.foreL[2] = mix3(1.75, 1.55, 0.05, c, t);
       R.armR = [mix3(0.15, -0.1, 0.28, c, t), 0, mix3(0.21, -0.4, 1.45, c, t)]; R.foreR[2] = mix3(1.95, 1.45, 0.05, c, t);
       R.torso = [0, -0.1 - 0.7 * c + 0.25 * t, -0.06 + 0.12 * c - 0.15 * t]; R.head = [0, 0.1 + 0.6 * c - 0.15 * t, 0.06];
-      oR = (0.04 + 0.12 * grow) * c + 0.17 * t;
+      oR = (0.04 + 0.12 * grow) * c + 0.17 * t; aura = s;
       R.legL = [0.15 * s, 0, 0.25 + 0.2 * s]; R.shinL[2] = -0.42 - 0.35 * s; R.legR = [-0.15 * s, 0, -0.12 - 0.28 * s]; R.shinR[2] = -0.32 - 0.25 * s; hy -= 0.05 * s;
     } else { // final flash: arms flung wide to the sides, chest out, a yellow ball in each palm; then palms slammed together in front
       const c = kf(p, [0, 0], [0.18, 1], [f - 0.08, 1], [f, 0]), t = kf(p, [f - 0.08, 0], [f + 0.02, 1], [0.88, 1], [1, 0]), s = Math.max(c, t);
       R.armL = [mix3(-0.15, 1.45, -0.25, c, t), 0, mix3(0.36, 0.15, 1.5, c, t)]; R.foreL[2] = mix3(1.75, 0.15, 0.05, c, t);
       R.armR = [mix3(0.15, -1.45, 0.25, c, t), 0, mix3(0.21, 0.15, 1.5, c, t)]; R.foreR[2] = mix3(1.95, 0.15, 0.05, c, t);
       R.torso = [0, -0.1 * (1 - s), -0.06 + 0.22 * c - 0.15 * t]; R.head = [0, 0.1, 0.06 + 0.15 * c];
-      oL = oR = (0.03 + 0.1 * grow) * c + 0.14 * t;
+      oL = oR = (0.03 + 0.1 * grow) * c + 0.14 * t; aura = s;
       R.legL = [0.22 * s, 0, 0.25]; R.shinL[2] = -0.42 - 0.25 * s; R.legR = [-0.22 * s, 0, -0.15]; R.shinR[2] = -0.32 - 0.3 * s; hy -= 0.045 * s;
     }
   } else if (k === 'jump') { // up into the air, knees tucked high, arms up for balance; then reaching for the ground
@@ -330,17 +360,56 @@ export function poseFighter(model, pose, walk) {
     R.legL[2] = 0.25 + 1.0 * u; R.shinL[2] = -0.42 - 1.5 * u; R.legR[2] = -0.12 + 0.75 * u; R.shinR[2] = -0.32 - 1.2 * u + 0.2 * land;
     R.armL = [-0.15 - 0.3 * u, 0, 0.36 + 0.6 * u]; R.armR = [0.15 + 0.3 * u, 0, 0.21 + 0.6 * u]; R.foreL[2] = 1.75 - 0.6 * u; R.foreR[2] = 1.95 - 0.6 * u;
     R.torso[2] = -0.06 - 0.15 * u; R.head[2] = 0.1 * u;
+  } else if (k === 'hit') { // taking a hit: a jab snaps the head back and round, a hook kick folds you sideways, a beam blows you back
+    rate = 40;
+    const kind = pose.kind || 'punch', hs = side === 'L' ? 1 : -1;
+    if (kind === 'punch') {
+      const q = kf(p, [0, 0], [0.12, 1], [1, 0]);
+      R.head = [0.25 * hs * q, 0.1 + 0.4 * hs * q, 0.06 + 0.45 * q]; R.torso[2] += 0.15 * q; R.torso[1] += 0.12 * hs * q;
+      R.armL[2] -= 0.12 * q; R.armR[2] -= 0.12 * q; hx = -0.04 * q;
+    } else if (kind === 'kick') {
+      const q = kf(p, [0, 0], [0.15, 1], [0.45, 1], [1, 0]);
+      R.torso = [0.35 * q, -0.1, -0.06 - 0.3 * q]; R.head = [0.3 * q, 0.1, -0.1 * q];
+      R.armL = [-0.3, 0, 0.15 + 0.2 * (1 - q)]; R.foreL[2] = 1.4; R.armR = [0.3, 0, 0.1 + 0.1 * (1 - q)]; R.foreR[2] = 1.5; // (arms down, covering the body)
+      R.shinL[2] -= 0.3 * q; R.shinR[2] -= 0.3 * q; hy -= 0.04 * q; hx = -0.07 * q;
+    } else { // a beam
+      const q = kf(p, [0, 0], [0.1, 1], [0.6, 1], [1, 0]);
+      R.torso = [0, -0.1, -0.06 + 0.6 * q]; R.head[2] = 0.45 * q; R.armL = [-0.3 * q, 0, 0.36 + 1.2 * q]; R.armR = [0.3 * q, 0, 0.21 + 1.3 * q];
+      R.foreL[2] = R.foreR[2] = 0.3 + 1.4 * (1 - q); R.legR[2] = 0.55 * q; R.shinR[2] = -0.32 - 0.6 * q; hx = -0.14 * q; hy -= 0.03 * q;
+    }
+  } else if (k === 'blockhit') { // a hit on your guard: the forearms are knocked back into your face, you rock back, then brace again
+    rate = 45;
+    const q = kf(p, [0, 0], [0.15, 1], [1, 0]);
+    R.armL = [-0.35, 0, 0.8 - 0.25 * q]; R.foreL[2] = 2.3 + 0.2 * q; R.armR = [0.35, 0, 0.8 - 0.25 * q]; R.foreR[2] = 2.3 + 0.2 * q;
+    R.head[2] = -0.2 + 0.12 * q; R.torso[2] = -0.14 + 0.18 * q; R.shinL[2] -= 0.22; R.shinR[2] -= 0.22; R.legL[2] += 0.1; R.legR[2] += 0.1; hy -= 0.035; hx = -0.04 * q;
+  } else if (k === 'win') { // the winner: a fist pumped in the air, the other hand on the hip, chest up, bouncing
+    rate = 12;
+    const s = live ? now : p * 2, pump = Math.max(0, Math.sin(s * 6));
+    R.armR = [0.25, 0, 2.75 + 0.2 * pump]; R.foreR[2] = 0.4 + 0.5 * (1 - pump); R.armL = [-0.7, 0, -0.35]; R.foreL[2] = 1.7;
+    R.torso = [0, 0.15, 0.18]; R.head = [0, 0.1, 0.3]; R.legL[2] = 0.1; R.legR[2] = -0.08; R.shinL[2] = R.shinR[2] = -0.15 - 0.15 * pump; hy = 0.462 - 0.012 * pump;
+  } else if (k === 'juggle') { // launched: flung back through the air, limbs flailing
+    rate = 18;
+    const s = live ? now : 0;
+    R.hips = [0, 0, 1.15 + 0.2 * Math.sin(s * 5)]; R.torso = [0, 0, 0.3]; R.head = [0, 0, 0.35];
+    R.armL = [-0.5, 0, 2.2 + 0.45 * Math.sin(s * 13)]; R.armR = [0.5, 0, 2.0 + 0.45 * Math.sin(s * 11 + 1)]; R.foreL[2] = R.foreR[2] = 0.5;
+    R.legL[2] = 0.7 + 0.35 * Math.sin(s * 9); R.shinL[2] = -0.9; R.legR[2] = 0.15 + 0.3 * Math.sin(s * 8 + 2); R.shinR[2] = -0.4;
+  } else if (k === 'getup') { // back on the feet: push up off the floor, through a crouch, into the stance
+    rate = 22;
+    const q = 1 - ease(Math.min(1, p * 1.3)), cr = Math.sin(Math.PI * p);
+    R.hips[2] = 1.45 * q; hy = 0.45 - 0.3 * q - 0.08 * cr; hx = -0.3 * q;
+    R.legL[2] += 0.6 * cr; R.shinL[2] -= 1.0 * cr; R.legR[2] += 0.5 * cr; R.shinR[2] -= 0.9 * cr;
+    R.armL[2] = -0.3 * q + R.armL[2] * (1 - q); R.armR[2] = -0.3 * q + R.armR[2] * (1 - q); R.torso[2] -= 0.4 * cr;
   } else if (k === 'block') { // both forearms snap up in front of the face, crouched, chin tucked
     rate = 35;
     const sh = live ? Math.sin(now * 40) * 0.012 : 0;
     R.armL = [-0.35, 0, 0.8 + sh]; R.foreL[2] = 2.3; R.armR = [0.35, 0, 0.8 - sh]; R.foreR[2] = 2.3; R.head[2] = -0.2; R.torso[2] = -0.14;
     R.shinL[2] -= 0.22; R.shinR[2] -= 0.22; R.legL[2] += 0.1; R.legR[2] += 0.1; hy -= 0.035;
-  } else if (k === 'dodge') { // duck, a tucked roll, and back on the feet
-    rate = 45;
-    const tuck = kf(p, [0, 0], [0.15, 1], [0.8, 1], [1, 0]);
-    R.hips[2] = -ease(kf(p, [0, 0], [0.12, 0], [0.88, 1], [1, 1])) * TAU; hy = 0.45 - 0.18 * tuck;
-    R.legL[2] = R.legR[2] = 1.6 * tuck + R.legL[2] * (1 - tuck); R.shinL[2] = R.shinR[2] = -2.2 * tuck - 0.35 * (1 - tuck);
-    R.armL[2] = R.armR[2] = 1.2 * tuck + 0.3 * (1 - tuck); R.foreL[2] = R.foreR[2] = 1.8; R.head[2] = -0.4 * tuck; R.torso[2] = -0.3 * tuck;
+  } else if (k === 'dodge') { // duck and weave: drop low, bending at the waist and slipping to one side, eyes up, hands tight
+    rate = 40;
+    const d = kf(p, [0, 0], [0.25, 1], [0.7, 1], [1, 0]), ws = pose.side === 'L' ? -1 : 1;
+    hy = 0.45 - 0.14 * d; R.torso = [0.35 * d * ws, -0.1, -0.06 - 0.45 * d]; R.head = [0.12 * d * ws, 0.1, 0.25 * d];
+    R.legL[2] = 0.25 + 0.45 * d; R.shinL[2] = -0.42 - 0.7 * d; R.legR[2] = -0.12 + 0.35 * d; R.shinR[2] = -0.32 - 0.6 * d;
+    R.armL = [-0.2, 0, 0.45]; R.foreL[2] = 2.0; R.armR = [0.2, 0, 0.35]; R.foreR[2] = 2.1;
   } else if (k === 'stun') { // dazed: swaying, head lolling, arms hanging, knees going
     rate = 10;
     const s = live ? now : p * 6;
@@ -354,6 +423,16 @@ export function poseFighter(model, pose, walk) {
     R.armL = [-0.3 * q, 0, 2.6 * q]; R.armR = [0.3 * q, 0, 2.6 * q]; R.foreL[2] = R.foreR[2] = 0.3; R.head[2] = 0.3 * q;
     R.legL[2] = 0.35 * q; R.legR[2] = 0.2 * q; R.shinL[2] = -0.2 - 0.6 * (1 - q) * Math.min(1, p * 5); R.shinR[2] = -0.1;
   }
+  if (U.aura) { // the aura: flaring up around the body as a special charges and fires
+    const a = U.aura, h = U.height || 1.21, fl = 1 + 0.07 * Math.sin((live ? now : p) * 37) + 0.04 * Math.sin((live ? now : p) * 61);
+    a.visible = aura > 0.05;
+    if (a.visible) { a.scale.set(0.95 * h * fl, 1.55 * h * (0.85 + 0.15 * aura) * fl, 1); a.material.opacity = 0.7 * aura; a.material.color.set(k === 'finalflash' ? '#ffe14d' : '#5fd0ff'); }
+  }
+  if (live) { // ducking and weaving fast: the body flickers (an afterimage)
+    const off = k === 'dodge' && p > 0.1 && p < 0.8 && Math.floor(now * 40) % 2 === 0;
+    if (off !== !!U.flickOff) { U.flickOff = off; model.traverse(o => { if (o.isMesh && !o.userData.glow) o.visible = !off; }); }
+  }
+  for (const b of ['armL', 'armR', 'foreL', 'foreR', 'legL', 'legR', 'shinL', 'shinR']) B[b].scale.y = SM[b] || 1;
   if (U.orbs) { // the energy balls: blue for a kamehameha, yellow for a final flash, flickering
     const col = k === 'finalflash' ? '#ffe14d' : '#5fd0ff', fl = 1 + 0.12 * Math.sin((live ? now : p) * 60);
     U.orbs.forEach((o, i) => { const s = i ? oR : oL; o.visible = s > 0.035; o.scale.setScalar(s * fl); o.material.color.set(col); o.children[0].material.color.set(col); });

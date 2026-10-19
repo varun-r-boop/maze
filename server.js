@@ -393,7 +393,7 @@ function sendSnapshots(r) {
       id: p.id, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.yaw * 100) / 100,
       fz: p.frozen, imm: p.immune > 0, tags: p.tags, f: p.fl, j: p.jumps, sc: Math.floor(p.score), k: p.hasKey, u: p.unlocked, e: p.escaped,
       ...(g.mode === 'fight' ? { hp: p.hp, mt: Math.floor(p.meter), ak: p.act ? p.act.k : null, sd: p.act ? p.act.side : null, at: p.act ? Math.round((g.time - p.act.t0) * 100) / 100 : 0,
-        bk: p.block, st: g.time < p.stunUntil, dg: g.time < p.dodgeUntil } : {}),
+        bk: p.block, st: g.time < p.stunUntil, dg: g.time < p.dodgeUntil, ay: p.air ? Math.round(p.air.y * 100) / 100 : 0, gu: g.time < (p.getupUntil || 0) } : {}),
     })),
   };
   if (g.mode === 'fight') Object.assign(shared, {
@@ -729,7 +729,7 @@ function startRound(r) {
   m.round++;
   [m.a, m.b].forEach((id, i) => {
     const p = fighterOf(g, id);
-    Object.assign(p, { hp: FT.HP, act: null, block: false, stunUntil: 0, dodgeUntil: 0, dodgeCd: 0, kbUntil: 0, boostUntil: 0, fl: 0, yaw: i ? Math.PI : 0 });
+    Object.assign(p, { hp: FT.HP, act: null, block: false, stunUntil: 0, dodgeUntil: 0, dodgeCd: 0, kbUntil: 0, boostUntil: 0, fl: 0, yaw: i ? Math.PI : 0, air: null, juggles: 0, getupUntil: 0, comboN: 0, comboUntil: 0 });
     teleport(r, p, center(sp[i][0]), center(sp[i][1]), p.yaw);
   });
   g.beams = [];
@@ -741,19 +741,25 @@ function landHit(r, att, def, kind) {
   const g = r.game, spec = FT[kind], now = Date.now();
   if (g.time < def.dodgeUntil) return broadcast(r, { t: 'hit', by: att.id, to: def.id, kind, miss: true, x: Math.round(def.x), y: Math.round(def.y) });
   const toAtt = Math.atan2(att.y - def.y, att.x - def.x), facing = Math.abs(Math.atan2(Math.sin(toAtt - def.yaw), Math.cos(toAtt - def.yaw))) < 1.4;
-  const blocked = def.block && facing, dmg = Math.round(spec.dmg * (blocked ? FT.BLOCK : 1));
+  const blocked = def.block && facing && !def.air; // (no blocking in the air)
+  const cb = blocked ? null : Sh.fightCombo(att, def, kind, g.time); // (a combo, a launch, a juggle)
+  if (blocked) att.comboN = 0;
+  const dmg = Math.round(spec.dmg * (blocked ? FT.BLOCK : cb.mult));
   def.hp = Math.max(0, def.hp - dmg);
   att.meter = Math.min(100, att.meter + dmg * FT.METER_DEAL); def.meter = Math.min(100, def.meter + dmg * FT.METER_TAKE);
   if (!blocked) {
     if (spec.stun) { def.stunUntil = g.time + spec.stun; def.act = null; }
-    if (spec.kb) {
+    // the shove: in the air a small one (so the juggle stays in reach), unless a beam blasted them; a long ground combo is broken off
+    let kb = def.air && !spec.beam ? (cb.launch ? 220 : 130) : spec.kb || 0;
+    if (cb.n >= FT.COMBO.breakAt && !def.air) { kb = 320; att.comboN = 0; }
+    if (kb) {
       const dx = def.x - att.x, dy = def.y - att.y, l = Math.hypot(dx, dy) || 1;
       def.kbUntil = now + 320;
       const c = r.clients.get(def.id);
-      if (c) send(c.ws, { t: 'kb', vx: dx / l * spec.kb, vy: dy / l * spec.kb, dur: 0.25 });
+      if (c) send(c.ws, { t: 'kb', vx: dx / l * kb, vy: dy / l * kb, dur: 0.25 });
     }
   }
-  broadcast(r, { t: 'hit', by: att.id, to: def.id, kind, dmg, blocked, hp: def.hp, x: Math.round(def.x), y: Math.round(def.y) });
+  broadcast(r, { t: 'hit', by: att.id, to: def.id, kind, dmg, blocked, hp: def.hp, x: Math.round(def.x), y: Math.round(def.y), combo: cb ? cb.n : 0, launch: !!(cb && cb.launch) });
 }
 const inReach = (p, o, range, arc) => {
   if (dist(p, o) > range) return false;
@@ -788,6 +794,7 @@ function fightTick(r, dt) {
   if (!m) return;
   const A = fighterOf(g, m.a), B = fighterOf(g, m.b);
   if (g.fphase === 'intro') { if (g.time >= g.fUntil) { g.fphase = 'fight'; g.fUntil = g.time + FT.ROUND_T; broadcast(r, { t: 'fight' }); } return; }
+  for (const p of [A, B]) stepAir(g, p, dt); // (launched fighters fall, even after a knock-out)
   if (g.fphase === 'ko') { if (g.time >= g.fUntil) afterRound(r); return; }
   // the moves: each lands after its wind-up
   const now = Date.now();
@@ -814,6 +821,15 @@ function fightTick(r, dt) {
     return true;
   });
   if (A.hp <= 0 || B.hp <= 0 || g.time >= g.fUntil) roundOver(r);
+}
+// a launched fighter: helpless while up; lands and gets up (nothing hits them while they get up)
+function stepAir(g, p, dt) {
+  if (!p || !p.air) return;
+  p.stunUntil = Math.max(p.stunUntil, g.time + 0.1); p.act = null;
+  if (Sh.fightAir(p, dt)) {
+    p.getupUntil = g.time + FT.JUGGLE.getup; p.juggles = 0;
+    p.dodgeUntil = Math.max(p.dodgeUntil, p.getupUntil); p.stunUntil = Math.max(p.stunUntil, p.getupUntil);
+  }
 }
 function roundOver(r) {
   const g = r.game, m = g.match, A = fighterOf(g, m.a), B = fighterOf(g, m.b);

@@ -148,8 +148,9 @@ function onMsg(m) {
     case 'fround': if (G) { banner(`ROUND ${m.n}`, '#ffd54f', 1.6); } break;
     case 'fight': if (G) { banner('FIGHT!', '#ff5252', 1); playFight('bell'); } break;
     case 'hit': if (G) onHit(m); break;
-    case 'special': if (G) { playFight(m.kind); if (m.by !== myId) addMsg(`${(G.players.get(m.by) || { name: '?' }).name}: ${(Sh.SPECIAL_NAMES[m.kind] || '').toUpperCase()}!`, '#ffb74d', 1.5); } break;
-    case 'ko': if (G) { banner(m.ko ? 'K.O.!' : m.w ? 'TIME!' : 'DRAW', '#ffd54f', 2.2); playFight('bell'); } break;
+    case 'special': if (G) { playFight(m.kind); if (FT[m.kind]) screenFx('fx-letterbox', (FT[m.kind].wind + FT[m.kind].beam) * 1000 + 200); if (FT[m.kind]) setTimeout(() => G && G.mode === 'fight' && screenFx('fx-speed', FT[m.kind].beam * 1000 + 200, m.kind === 'finalflash' ? '#fff3a0' : '#bfefff'), FT[m.kind].wind * 1000); // (speed lines as the beam fires)
+       if (m.by !== myId) addMsg(`${(G.players.get(m.by) || { name: '?' }).name}: ${(Sh.SPECIAL_NAMES[m.kind] || '').toUpperCase()}!`, '#ffb74d', 1.5); } break;
+    case 'ko': if (G) { screenFx('fx-letterbox', FT.KO_PAUSE * 1000 - 300); banner(m.ko ? 'K.O.!' : m.w ? 'TIME!' : 'DRAW', '#ffd54f', 2.2); playFight('bell'); } break;
     case 'kb': if (G) G.kb = { vx: m.vx, vy: m.vy, until: performance.now() + m.dur * 1000 }; break;
     case 'end':
       if (document.pointerLockElement) document.exitPointerLock();
@@ -311,7 +312,7 @@ function initGame(m) {
     grid: m.grid, n: m.players.length, roundTime: m.roundTime, hold: m.hold, explore: !!m.explore,
     floors: m.floors || [{ x0: 0, x1: COLS - 1 }], stairs: m.stairs || [], floor: -1,
     mode: m.mode || 'tag', phase: m.phase || null, left: m.sculptTime || 0, sculptTime: m.sculptTime || 0, objs: new Map(), target: null, canFind: false, sculptDone: null,
-    arena: m.arena || null, bracket: null, fm: null, fp: null, beams: [], beamsAt: 0, fx: [], banner: null, myAct: null, blocking: false, dodgeUntil: 0, dodgeCd: 0, kb: null, shake: 0,
+    arena: m.arena || null, bracket: null, fm: null, fp: null, beams: [], beamsAt: 0, fx: [], sparks: [], sparkN: 0, hitStop: 0, banner: null, myAct: null, blocking: false, dodgeUntil: 0, dodgeCd: 0, kb: null, shake: 0,
     upper: m.upper || null, ramps: m.ramps || [], library: m.library || null, fl: meInfo.fl || 0, jumpT: -1, rest: 0, jc: 0, sentJ: 0,
     map: m.map || 'building', flights: m.flights || [], rooms: m.rooms || [], furniture: m.furniture || [], doors: m.doors || [], forest: m.forest || null, office: m.office || null, mall: m.mall || null, bright: !!m.bright, fade: 0,
     players: new Map(), me: { x: meInfo.x, y: meInfo.y }, slot: meInfo.slot, role: meInfo.role, tpSeq: 0,
@@ -354,7 +355,10 @@ function applySnapshot(s) {
     seen.add(sp.id);
     Object.assign(p, { tx: sp.x, ty: sp.y, ta: sp.a, fz: sp.fz, imm: sp.imm, tags: sp.tags, fl: sp.f || 0, sc: sp.sc || 0, k: !!sp.k, u: !!sp.u, e: !!sp.e });
     if (sp.j > p.jc) { p.jc = sp.j; if (sp.id !== myId) p.jumpT = 0; } // they jumped
-    if (sp.hp !== undefined) Object.assign(p, { hp: sp.hp, mt: sp.mt, ak: sp.ak, sd: sp.sd, at: sp.at, atAt: performance.now(), bk: sp.bk, st: sp.st, dg: sp.dg });
+    if (sp.hp !== undefined) {
+      if (sp.gu && !p.gu) p.guAt = performance.now(); // (they've landed and are getting up)
+      Object.assign(p, { hp: sp.hp, mt: sp.mt, ak: sp.ak, sd: sp.sd, at: sp.at, atAt: performance.now(), bk: sp.bk, st: sp.st, dg: sp.dg, ay: sp.ay || 0, gu: sp.gu });
+    }
   }
   for (const id of [...G.players.keys()]) if (!seen.has(id)) G.players.delete(id); // someone left
   if (G.esc && s.bots) {
@@ -574,6 +578,11 @@ function update(dt) {
     p.rx += (p.tx - p.rx) * k; p.ry += (p.ty - p.ry) * k; p.ra = lerpAngle(p.ra, p.ta, k);
     const c = Math.cos(p.ta); if (Math.abs(c) > 0.3) p.flip = c < 0 ? -1 : 1; // walking straight up/down keeps their last side
     p.walk = moving ? p.walk + dt * 12 : 0;
+    p.ayR = (p.ayR || 0) + ((p.ay || 0) - (p.ayR || 0)) * Math.min(1, k * 1.6); // (how high a launched fighter is flying, smoothed)
+    if (moving) { // (which way they're stepping, relative to where they face: for a fighter's footwork)
+      const dx = p.tx - p.rx, dy = p.ty - p.ry, l = Math.hypot(dx, dy), c = Math.cos(p.ra), s = Math.sin(p.ra);
+      p.mv = { f: (dx * c + dy * s) / l, s: (dy * c - dx * s) / l };
+    }
   }
   if (G.esc) {
     G.esc.zl = Math.max(0, G.esc.zl - dt);
@@ -657,6 +666,7 @@ function update(dt) {
     if (fl !== G.fl) { G.fl = fl; addMsg(fl ? 'Upstairs' : 'Ground floor', '#ffe9a8', 1.5); }
   }
   G.walk = G.moving ? G.walk + dt * 12 : 0;
+  if (G.mode === 'fight' && (mx || my)) { const c = Math.cos(aim), s = Math.sin(aim); G.mv = { f: mx * c + my * s, s: my * c - mx * s }; } // (stepping in, back, or round them)
   aim = Math.atan2(Math.sin(aim), Math.cos(aim)); // keep it in -PI..PI
 
   const now = performance.now();
@@ -1104,14 +1114,16 @@ function draw3D(t) {
     const pos = posOf(id, p), self = id === myId;
     players.set(id, {
       ...pos, a: self ? aim : p.ra, walk: self ? G.walk : p.walk, role: p.role, fz: p.fz, imm: p.imm,
-      show: canSee(view, id, p, pos) && !(G.mode === 'clay' && G.phase === 'sculpt') && !(p.e && !self), mark: !self && isTeammate(p) && !p.e, h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * jump3d(),
-      pose: G.arena ? poseOf(id, p) : null,
+      show: canSee(view, id, p, pos) && !(G.mode === 'clay' && G.phase === 'sculpt') && !(p.e && !self), mark: !self && isTeammate(p) && !p.e, h: heightAt(pos), jump: jumpK(self ? G.jumpT : p.jumpT) * jump3d() + (p.ayR || 0),
+      pose: G.arena ? poseOf(id, p) : null, move: self ? G.mv : p.mv,
     });
   }
   v3d.render({
-    G, view, t, mode: viewMode, players, noises: G.noises, beams: G.mode === 'fight' ? G.beams.map(b => ({ ...b, age: b.t + (performance.now() - G.beamsAt) / 1000, len: FT[b.k] ? FT[b.k].len : 0, life: FT[b.k] ? FT[b.k].beam : 0 })) : null, fightCam: G.mode === 'fight' && inMatch(myId), excite: G.mode === 'fight' ? Math.min(1, G.fx.length * 0.5) : 0,
+    G, view, t, mode: viewMode, players, noises: G.noises, beams: G.mode === 'fight' ? G.beams.map(b => ({ ...b, age: b.t + (performance.now() - G.beamsAt) / 1000, len: FT[b.k] ? FT[b.k].len : 0, life: FT[b.k] ? FT[b.k].beam : 0 })) : null, fightCam: G.mode === 'fight' && inMatch(myId), sparks: G.sparks,
+    koCam: G.mode === 'fight' && G.fm && G.fp === 'ko' ? (() => { const a = G.players.get(G.fm.a), b = G.players.get(G.fm.b); return a && b ? { x: (posOf(G.fm.a, a).x + posOf(G.fm.b, b).x) / 2, y: (posOf(G.fm.a, a).y + posOf(G.fm.b, b).y) / 2 } : null; })() : null, hitStop: G.hitStop, shake: G.shake || 0, // (a knock-out: the camera circles the fighters)
+    camZoom: (() => { const me = G.mode === 'fight' && inMatch(myId) && poseOf(myId, G.players.get(myId)); return me && FT[me.k] && FT[me.k].beam ? 1 : 0; })(),  excite: G.mode === 'fight' ? Math.min(1, G.fx.length * 0.5) : 0, // (push in close while you charge and fire a beam)
     clay: G.mode === 'clay' ? [...G.objs.values()].map(o => ({ ...o, show: o.x != null && (G.phase === 'hunt' || o.id === myId), fill: lumpColor((G.players.get(o.id) || { slot: 0 }).slot) })) : null,
-    pitch, flicker: G.flicker, walk: G.walk, viewH: heightAt(view), viewJump: jumpK(G.jumpT) * jump3d(),
+    pitch, flicker: G.flicker, walk: G.walk, viewH: heightAt(view), viewJump: jumpK(G.jumpT) * jump3d() + ((G.players.get(myId) || {}).ayR || 0),
     escape: G.esc && {
       bots: G.esc.bots.map(b => { const pos = { x: b.rx, y: b.ry, fl: b.fl }; return { ...pos, a: b.ra, walk: b.walk, h: heightAt(pos), show: isLit(view, pos) }; }),
       key: G.esc.key && { ...G.esc.key, show: !G.players.get(myId).k && isLit(view, G.esc.key) },
@@ -1146,7 +1158,7 @@ function drawWorld(t) {
     const pos = posOf(id, p), self = id === myId;
     if (!canSee(view, id, p, pos) || (p.e && !self)) continue; // (in key escape, anyone who got out is gone)
     const below = G.upper && Sh.elev(G, pos) < Sh.elev(G, view) - 0.5; // seen down in the atrium from the gallery
-    const up = jumpK(self ? G.jumpT : p.jumpT) * jumpPx();
+    const up = jumpK(self ? G.jumpT : p.jumpT) * jumpPx() + (p.ayR || 0) * 34;
     actors.push({ y: pos.y + (below ? -1e5 : 0), draw: () => {
       const blink = p.imm && Math.floor(t * 10) % 2; // just unfrozen: can't be tagged for a moment
       if (up) { ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(pos.x, pos.y + 15, 11 * (1 - up / 60), 4, 0, 0, Math.PI * 2); ctx.fill(); } // their shadow stays on the floor
@@ -1688,8 +1700,24 @@ function setBlock(on) {
   on = !!on && inMatch(myId);
   if (on !== G.blocking) { G.blocking = on; send({ t: 'blk', on }); }
 }
+// anime touches on the screen: an impact frame (everything flashes inverted) and speed lines rushing in
+function screenFx(cls, ms, col) {
+  const d = document.createElement('div'); d.className = cls; if (col) d.style.setProperty('--fx-col', col);
+  if (cls === 'fx-letterbox') d.innerHTML = '<i></i><i></i>';
+  document.body.appendChild(d); setTimeout(() => { d.classList.add('out'); setTimeout(() => d.remove(), 300); }, ms);
+}
 function onHit(m) {
   const big = m.kind !== 'punch';
+  if (!m.miss) { // a burst where it lands, a split-second freeze, and for a big clean hit an impact frame
+    const kind = m.blocked ? 'block' : m.kind, now = performance.now();
+    G.sparks.push({ id: ++G.sparkN, x: m.x, y: m.y, kind, t0: now });
+    G.hitStop = now + (FT.HIT_STOP[kind] || 0.06) * 1000;
+    if (big && !m.blocked) screenFx('fx-impact', m.kind === 'kick' ? 50 : 90);
+    if (m.combo >= 2) G.comboHud = { by: m.by, n: m.combo, t0: now }; // (the combo counter)
+    if (m.launch) { G.fx.push({ x: m.x, y: m.y - 26, t: 0.9, d: 0.9, text: 'LAUNCH!', dmg: 0, color: '#ff5252', big: true }); playFight('swish'); }
+  }
+  const v = G.players.get(m.to), att = G.players.get(m.by);
+  if (v && !m.miss) Object.assign(v, { hitAt: performance.now(), hitK: m.blocked ? 'block' : m.kind, hitSide: m.by === myId ? G.myAct && G.myAct.side : att && att.sd }); // (they react to it)
   G.fx.push({ x: m.x, y: m.y, t: 0.7, d: 0.7, text: m.miss ? 'MISS' : m.blocked ? 'BLOCK' : { punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH' }[m.kind], dmg: m.miss ? 0 : m.dmg, color: m.miss ? '#b9b5d6' : m.blocked ? '#7fd4ff' : big ? '#ff8a3d' : '#ffe066', big });
   playFight(m.miss ? 'swish' : m.blocked ? 'block' : big ? 'kick' : 'punch');
   if (m.to === myId && !m.miss && !m.blocked) G.shake = big ? 0.35 : 0.15;
@@ -1697,6 +1725,7 @@ function onHit(m) {
 function fightUpdate(dt) {
   G.left = Math.max(0, G.left - dt);
   for (const f of G.fx) f.t -= dt;
+  G.sparks = G.sparks.filter(s => performance.now() - s.t0 < 1000);
   G.fx = G.fx.filter(f => f.t > 0);
   if (G.banner && (G.banner.t -= dt) <= 0) G.banner = null;
   G.shake = Math.max(0, G.shake - dt);
@@ -1734,6 +1763,13 @@ function poseOf(id, p) {
   const now = performance.now(), fighting = inMatch(id);
   if (fighting && p.hp <= 0) return { k: 'ko', p: 1 };
   if (!fighting) return null;
+  if ((p.ayR || 0) > 0.03 || p.ay > 0) return { k: 'juggle', p: 0 }; // (launched: flying, helpless)
+  if (p.gu) return { k: 'getup', p: Math.min(1, (now - (p.guAt || now)) / (FT.JUGGLE.getup * 1000)) };
+  if (G.fp === 'ko' && p.hp > 0) { const o = oppOf(id); if (!o || (o.hp ?? 1) <= 0 || p.hp > o.hp) return { k: 'win', p: 0.5 }; } // (the round's winner celebrates)
+  if (p.hitAt) { // taking a hit (or a hit on your guard)
+    const d = FT.HIT_T[p.hitK] || 0.3, e = (now - p.hitAt) / 1000;
+    if (e < d) return p.hitK === 'block' ? { k: 'blockhit', p: e / d } : { k: 'hit', p: e / d, kind: p.hitK, side: p.hitSide };
+  }
   if (id === myId) {
     if (now < G.dodgeUntil) return { k: 'dodge', p: 1 - (G.dodgeUntil - now) / (FT.DODGE.t * 1000) };
     if (p.st) return { k: 'stun', p: (now % 1000) / 1000 };
@@ -1825,6 +1861,17 @@ function drawFightHud(meP, t) {
     ctx.textAlign = 'center'; ctx.font = 'bold 22px system-ui'; ctx.fillStyle = G.fp === 'fight' && G.left < 10 ? '#ff5252' : '#fff';
     ctx.fillText(G.fp === 'fight' ? String(Math.ceil(G.left)) : G.fp === 'intro' ? `${Math.ceil(G.left)}` : '—', W / 2, 26);
     ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#b9b5d6'; ctx.fillText(`ROUND ${fm.rn}`, W / 2, 48);
+    // the combo counter: big slanted "N HITS" on the side of whoever's combo it is
+    const ch = G.comboHud, ca = ch ? (performance.now() - ch.t0) / 1000 : 9;
+    if (ch && ca < 1.4) {
+      const left = ch.by === fm.a, pop = 1 + 0.35 * Math.max(0, 1 - ca / 0.12), x = left ? 40 : W - 40;
+      ctx.save(); ctx.globalAlpha = Math.min(1, (1.4 - ca) * 3); ctx.translate(x, 118); ctx.rotate(-0.12); ctx.scale(pop, pop); ctx.textAlign = left ? 'left' : 'right';
+      ctx.font = 'italic 900 40px system-ui'; ctx.lineWidth = 7; ctx.strokeStyle = '#1a0a00'; ctx.fillStyle = ch.by === myId ? '#ffd54f' : '#ff5252';
+      ctx.strokeText(String(ch.n), 0, 0); ctx.fillText(String(ch.n), 0, 0);
+      const nw = ctx.measureText(String(ch.n)).width; ctx.font = 'italic 900 18px system-ui'; ctx.lineWidth = 5;
+      ctx.strokeText('HITS', left ? nw + 8 : -nw - 8, 8); ctx.fillStyle = '#fff'; ctx.fillText('HITS', left ? nw + 8 : -nw - 8, 8);
+      ctx.restore();
+    }
   } else {
     // between matches: who's up next
     const rd = G.bracket && G.bracket[G.bracket.length - 1], next = rd && rd.find(m => m.w == null);
@@ -1862,7 +1909,7 @@ function drawFightHud(meP, t) {
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.font = 'bold 14px system-ui'; ctx.fillStyle = COLORS[meP.slot]; ctx.fillText(meP.name, x + 14, y + 20);
   ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'right'; ctx.fillStyle = fighting ? '#ff8a80' : '#b388ff'; ctx.fillText(fighting ? 'FIGHTING' : 'WATCHING', x + w - 10, y + 20); ctx.textAlign = 'left';
   ctx.font = '12px system-ui'; ctx.fillStyle = '#e8e6f0';
-  ctx.fillText(fighting ? (isTouch ? 'Use the buttons · double-tap to jump' : 'Punch: click / J · Kick: right-click / K · Block: hold Shift · Dodge: C · Special: F · Jump: Space')
+  ctx.fillText(fighting ? (isTouch ? 'Use the buttons · double-tap to jump' : 'Jab: click / J · Hook kick: right-click / K · Block: hold Shift · Duck: C · Special: F · Jump: Space')
     : fm ? `${nameOf(fm.a)} vs ${nameOf(fm.b)}: watch from the stands` : 'Waiting for the next fight…', x + 14, y + 44);
 }
 

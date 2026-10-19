@@ -57,7 +57,7 @@
   S.FIGHT = {
     HP: 100, ROUND_T: 60, WINS: 2,   // health; seconds per round; rounds needed to win a match (best of 3)
     INTRO: 3, KO_PAUSE: 3, BRACKET_PAUSE: 4, // seconds: "Round 1… FIGHT!", after a knock-out, showing the bracket
-    punch: { dmg: 7, range: 50, arc: 1.0, wind: 0.07, cd: 0.32, stun: 0.12 },          // range px, arc: half-angle (radians)
+    punch: { dmg: 7, range: 50, arc: 1.0, wind: 0.07, cd: 0.32, stun: 0.34 },         // range px, arc: half-angle (radians); the stun lasts until your next jab lands (jabs chain)
     kick: { dmg: 14, range: 60, arc: 0.85, wind: 0.22, cd: 0.75, stun: 0.3, kb: 260 }, // kb: knock-back speed (px/s)
     BLOCK: 0.25, BLOCK_SPEED: 0.45,  // blocking: share of the damage you still take, and how fast you can move
     DODGE: { t: 0.28, speed: 430, cd: 1.0 }, // a roll: nothing hits you while it lasts
@@ -66,6 +66,15 @@
     // for `beam` seconds, `len` px long and `w` px wide. Jump over it to dodge it.
     kamehameha: { dmg: 24, wind: 0.75, beam: 0.5, len: 340, w: 22, cd: 1.5, stun: 0.5, kb: 380 },
     finalflash: { dmg: 30, wind: 1.0, beam: 0.6, len: 400, w: 34, cd: 1.85, stun: 0.6, kb: 460 },
+    // combos: hits that land within `window` seconds of each other chain; from the 3rd hit each does `scale` times less.
+    // A ground combo is broken off (they're shoved away) after `breakAt` hits.
+    COMBO: { window: 0.9, scale: 0.88, breakAt: 6 },
+    // juggles: a kick as the 3rd hit of a combo (jab, jab, kick) launches them, and a beam always sends them flying.
+    // While they're up, every hit pops them back up (less each time, `decay`; at most `max` times). Then they fall,
+    // land and get up (`getup` seconds, nothing hits them). Heights in 3D units, `g` the gravity.
+    JUGGLE: { g: 11, launch: 5.4, pop: { punch: 2.4, kick: 3.8, kamehameha: 4.6, finalflash: 5.2 }, decay: 0.8, max: 6, getup: 0.55 },
+    HIT_T: { punch: 0.3, kick: 0.5, kamehameha: 0.8, finalflash: 0.9, block: 0.25 }, // seconds each hit reaction plays (block: a hit on your guard)
+    HIT_STOP: { punch: 0.06, kick: 0.12, kamehameha: 0.2, finalflash: 0.26, block: 0.05 }, // hit-stop: both fighters freeze for this long as a hit lands
     JUMP_T: 0.85, JUMP_H: 1.35, JUMP_PX: 46, // a fighter's jump: seconds in the air, how high (3D units, and px top-down)
   };
   // Building your own fighter: a character is a list of shapes dropped onto a skeleton. Each shape belongs to the body
@@ -92,6 +101,24 @@
     const pr = f && f.prop && typeof f.prop === 'object' ? f.prop : {};
     const prop = { arm: Math.round(num(pr.arm, 0.6, 1.6, 1) * 100) / 100, leg: Math.round(num(pr.leg, 0.6, 1.5, 1) * 100) / 100, body: Math.round(num(pr.body, 0.6, 1.4, 1) * 100) / 100 };
     return { special: S.FIGHT_SPECIALS.includes(f && f.special) ? f.special : 'kamehameha', parts: parts && parts.length ? parts : null, prop };
+  };
+  // a hit lands (not blocked): counts the combo, launches or juggles. att and def are the fighters (they keep comboN,
+  // comboUntil, air: { y, vy }, juggles); time is the game clock in seconds. Returns { n, mult, launch }.
+  S.fightCombo = (att, def, kind, time) => {
+    const C = S.FIGHT.COMBO, J = S.FIGHT.JUGGLE, beam = !!S.FIGHT[kind].beam;
+    const n = def.air || time < (att.comboUntil || 0) ? (att.comboN || 0) + 1 : 1;
+    att.comboN = n; att.comboUntil = time + C.window; def.comboN = 0;
+    let launch = false;
+    if (def.air) { if ((def.juggles || 0) < J.max) { def.air.vy = Math.max(def.air.vy, (J.pop[kind] || 2) * Math.pow(J.decay, def.juggles || 0)); def.juggles = (def.juggles || 0) + 1; } }
+    else if ((kind === 'kick' && n >= 3) || beam) { def.air = { y: 0.01, vy: beam ? J.pop[kind] : J.launch }; def.juggles = 0; launch = true; }
+    return { n, mult: Math.pow(C.scale, Math.max(0, n - 2)), launch };
+  };
+  // someone in the air: falls; true when they land
+  S.fightAir = (p, dt) => {
+    if (!p.air) return false;
+    p.air.vy -= S.FIGHT.JUGGLE.g * dt; p.air.y += p.air.vy * dt;
+    if (p.air.y > 0) return false;
+    p.air = null; return true;
   };
   // the colors you can paint your clay sculpture
   S.CLAY_COLORS = ['#e85d5d', '#f28a3b', '#f2c94c', '#7fc65a', '#3fa66b', '#4aa3df', '#3c5fc4', '#9b6ad6', '#f07cb0', '#f4efe2', '#8a5a3a', '#3d3d48'];
