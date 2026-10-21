@@ -350,6 +350,13 @@ export function poseFighter(model, pose, walk, move) {
     R.hips = [0.04 * cs * af, -0.12 * sn * af, 0]; R.torso = [0.06 * dirS * as, -0.1 + 0.18 * sn * af, fw >= 0 ? -0.13 : -0.02]; R.head = [-0.04 * dirS * as, 0.1 - 0.06 * sn * af, 0.1];
     R.armL = [-0.15, 0, 0.4 - 0.12 * sn]; R.foreL[2] = 1.72 + 0.1 * sn; R.armR = [0.15, 0, 0.24 + 0.12 * sn]; R.foreR[2] = 1.92 - 0.1 * sn;
     hy = 0.44 + 0.012 * Math.cos(2 * walk); // (highest as the legs pass, lowest with both feet down)
+    if (mv.run) { // running: a long fast stride, leaning into it, arms pumping out of the guard
+      R.legL = [0, 0, 0.15 + sn * 0.85]; R.shinL[2] = -(0.35 + Math.max(0, cs) * 1.5);
+      R.legR = [0, 0, 0.15 - sn * 0.85]; R.shinR[2] = -(0.35 + Math.max(0, -cs) * 1.5);
+      R.hips = [0, -0.18 * sn, 0]; R.torso = [0, 0.25 * sn, -0.32]; R.head = [0, -0.12 * sn, 0.3];
+      R.armL = [-0.1, 0, -sn * 1.0]; R.foreL[2] = 1.4; R.armR = [0.1, 0, sn * 1.0]; R.foreR[2] = 1.4;
+      hy = 0.425 + 0.03 * Math.cos(2 * w);
+    }
   } else { // the guard: an anime fighting stance: wide and low, side-on and leaning in, fists up, bouncing hard on the toes
     const bt = now * TAU * 1.8, bob = Math.sin(bt), br = Math.sin(now * TAU * 0.35), wv = Math.sin(now * 1.3);
     R.legL = [0.12, 0, 0.38]; R.shinL[2] = -0.6 - 0.1 * bob; R.legR = [-0.12, 0, -0.28]; R.shinR[2] = -0.5 - 0.1 * bob;

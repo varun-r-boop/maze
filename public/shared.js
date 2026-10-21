@@ -59,6 +59,7 @@
     INTRO: 3, KO_PAUSE: 3, BRACKET_PAUSE: 4, // seconds: "Round 1… FIGHT!", after a knock-out, showing the bracket
     punch: { dmg: 7, range: 50, arc: 1.0, wind: 0.07, cd: 0.32, stun: 0.34 },         // range px, arc: half-angle (radians); the stun lasts until your next jab lands (jabs chain)
     kick: { dmg: 14, range: 60, arc: 0.85, wind: 0.22, cd: 0.75, stun: 0.3, kb: 260 }, // kb: knock-back speed (px/s)
+    RUN: 1.75, // running (hold R, or double-tap a direction): this much faster than walking
     BLOCK: 0.25, BLOCK_SPEED: 0.45,  // blocking: share of the damage you still take, and how fast you can move
     DODGE: { t: 0.28, speed: 430, cd: 1.0 }, // a roll: nothing hits you while it lasts
     METER_DEAL: 1.5, METER_TAKE: 1.0, // the special meter (0-100) fills by this much per point of damage dealt / taken

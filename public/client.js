@@ -358,7 +358,7 @@ function applySnapshot(s) {
     if (sp.j > p.jc) { p.jc = sp.j; if (sp.id !== myId) p.jumpT = 0; } // they jumped
     if (sp.hp !== undefined) {
       if (sp.gu && !p.gu) p.guAt = performance.now(); // (they've landed and are getting up)
-      Object.assign(p, { hp: sp.hp, mt: sp.mt, ak: sp.ak, sd: sp.sd, at: sp.at, atAt: performance.now(), bk: sp.bk, st: sp.st, dg: sp.dg, ay: sp.ay || 0, gu: sp.gu });
+      Object.assign(p, { hp: sp.hp, mt: sp.mt, ak: sp.ak, sd: sp.sd, rn: sp.rn, at: sp.at, atAt: performance.now(), bk: sp.bk, st: sp.st, dg: sp.dg, ay: sp.ay || 0, gu: sp.gu });
     }
   }
   for (const id of [...G.players.keys()]) if (!seen.has(id)) G.players.delete(id); // someone left
@@ -386,6 +386,16 @@ function addMsg(text, color = '#fff', dur = 3) { G.msgs.push({ text, color, t: d
 
 // ---------------------------------------------------------------- input
 const keys = new Set();
+// running in a fight: hold R, or double-tap a direction key and keep holding it
+const MOVE_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+let runTap = { code: null, t: 0 };
+addEventListener('keydown', e => {
+  if (e.repeat || !MOVE_KEYS.includes(e.code) || !G) return;
+  const now = performance.now();
+  if (runTap.code === e.code && now - runTap.t < 300) G.runKey = e.code;
+  runTap = { code: e.code, t: now };
+});
+addEventListener('keyup', e => { if (G && G.runKey === e.code) G.runKey = null; });
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   keys.add(e.code);
@@ -578,11 +588,11 @@ function update(dt) {
     const moving = Math.hypot(p.tx - p.rx, p.ty - p.ry) > 0.8;
     p.rx += (p.tx - p.rx) * k; p.ry += (p.ty - p.ry) * k; p.ra = lerpAngle(p.ra, p.ta, k);
     const c = Math.cos(p.ta); if (Math.abs(c) > 0.3) p.flip = c < 0 ? -1 : 1; // walking straight up/down keeps their last side
-    p.walk = moving ? p.walk + dt * 12 : 0;
+    p.walk = moving ? p.walk + dt * (p.rn ? 17 : 12) : 0;
     p.ayR = (p.ayR || 0) + ((p.ay || 0) - (p.ayR || 0)) * Math.min(1, k * 1.6); // (how high a launched fighter is flying, smoothed)
     if (moving) { // (which way they're stepping, relative to where they face: for a fighter's footwork)
       const dx = p.tx - p.rx, dy = p.ty - p.ry, l = Math.hypot(dx, dy), c = Math.cos(p.ra), s = Math.sin(p.ra);
-      p.mv = { f: (dx * c + dy * s) / l, s: (dy * c - dx * s) / l };
+      p.mv = { f: (dx * c + dy * s) / l, s: (dy * c - dx * s) / l, run: !!p.rn };
     }
   }
   if (G.esc) {
@@ -658,6 +668,7 @@ function update(dt) {
     if (c > 0.3) G.flip = 1; else if (c < -0.3) G.flip = -1;
   }
   let speed = PLAYER_SPEED * (G.role === 'it' ? TAGGER_SPEED : 1), still = stuck;
+  G.running = G.mode === 'fight' && !G.blocking && (keys.has('KeyR') || (G.runKey && keys.has(G.runKey)) || (joy && Math.hypot(joy.x - joy.ox, joy.y - joy.oy) > 90)); // (a long drag on a phone runs)
   if (G.mode === 'fight') ({ mx, my, speed, still } = fightSteer(dt, mx, my, speed, stuck));
   if ((mx || my) && !still) {
     const bx = G.me.x, by = G.me.y;
@@ -666,14 +677,14 @@ function update(dt) {
     const fl = Sh.nextFloor(G, G.me.x, G.me.y, G.fl); // up or down a staircase
     if (fl !== G.fl) { G.fl = fl; addMsg(fl ? 'Upstairs' : 'Ground floor', '#ffe9a8', 1.5); }
   }
-  G.walk = G.moving ? G.walk + dt * 12 : 0;
-  if (G.mode === 'fight' && (mx || my)) { const c = Math.cos(aim), s = Math.sin(aim); G.mv = { f: mx * c + my * s, s: my * c - mx * s }; } // (stepping in, back, or round them)
+  G.walk = G.moving ? G.walk + dt * (G.running ? 17 : 12) : 0;
+  if (G.mode === 'fight' && (mx || my)) { const c = Math.cos(aim), s = Math.sin(aim); G.mv = { f: mx * c + my * s, s: my * c - mx * s, run: !!G.running }; } // (stepping in, back, or round them)
   aim = Math.atan2(Math.sin(aim), Math.cos(aim)); // keep it in -PI..PI
 
   const now = performance.now();
   const turned = G.sentA === null || Math.abs(aim - G.sentA) > 0.03;
   if ((now - G.lastSent > 50 && (G.me.x !== G.sentX || G.me.y !== G.sentY || turned)) || G.jc !== G.sentJ) {
-    send({ t: 'pos', x: Math.round(G.me.x * 10) / 10, y: Math.round(G.me.y * 10) / 10, a: Math.round(aim * 100) / 100, s: G.tpSeq, j: G.jc });
+    send({ t: 'pos', x: Math.round(G.me.x * 10) / 10, y: Math.round(G.me.y * 10) / 10, a: Math.round(aim * 100) / 100, s: G.tpSeq, j: G.jc, r: G.running ? 1 : 0 });
     G.lastSent = now; G.sentX = G.me.x; G.sentY = G.me.y; G.sentA = aim; G.sentJ = G.jc;
   }
 }
@@ -1764,7 +1775,7 @@ function fightSteer(dt, mx, my, speed, stuck) {
     const dx = G.me.x - o.rx, dy = G.me.y - o.ry, d = Math.hypot(dx, dy);
     if (d < 30 && d > 0.1) { const push = Math.min(30 - d, 160 * dt); Sh.moveCircle(G, G.me, dx / d * push, dy / d * push, PLAYER_R); }
   }
-  return { mx, my, speed: speed * (G.blocking ? FT.BLOCK_SPEED : 1), still: false };
+  return { mx, my, speed: speed * (G.blocking ? FT.BLOCK_SPEED : G.running ? FT.RUN : 1), still: false };
 }
 // what a fighter is doing right now, for drawing them: { k: move, p: 0..1 }
 function poseOf(id, p) {
@@ -1927,7 +1938,7 @@ function drawFightHud(meP, t) {
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.font = 'bold 14px system-ui'; ctx.fillStyle = COLORS[meP.slot]; ctx.fillText(meP.name, x + 14, y + 20);
   ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'right'; ctx.fillStyle = fighting ? '#ff8a80' : '#b388ff'; ctx.fillText(fighting ? 'FIGHTING' : 'WATCHING', x + w - 10, y + 20); ctx.textAlign = 'left';
   ctx.font = '12px system-ui'; ctx.fillStyle = '#e8e6f0';
-  ctx.fillText(fighting ? (isTouch ? 'Use the buttons · double-tap to jump' : 'Jab: J/click · Hook kick: K/right-click · Block: Shift · Duck: C · Special: F · Jump: Space · Combos: JJJ rush, JJK rising kick, KK spin kick, KJ uppercut · In the air: J air jab, JK meteor smash, K dive kick, KK tornado kick')
+  ctx.fillText(fighting ? (isTouch ? 'Use the buttons · double-tap to jump' : 'Run: hold R (or double-tap) · Jab: J/click · Hook kick: K/right-click · Block: Shift · Duck: C · Special: F · Jump: Space · Combos: JJJ rush, JJK rising kick, KK spin kick, KJ uppercut · In the air: J air jab, JK meteor smash, K dive kick, KK tornado kick')
     : fm ? `${nameOf(fm.a)} vs ${nameOf(fm.b)}: watch from the stands` : 'Waiting for the next fight…', x + 14, y + 44);
 }
 

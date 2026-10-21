@@ -40,7 +40,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
       <div><span>TRAINING DUMMY</span><div class="pr-bar pr-hp"><i></i></div></div>
       <div><span>YOUR SPECIAL (${Sh.SPECIAL_NAMES[fighter.special]})</span><div class="pr-bar pr-mt"><i></i></div></div>
     </div>
-    <p class="pr-help">${isTouch ? 'Drag to move · buttons to fight' : 'W A S D move · J/click: jab · K/right-click: hook kick · Shift: block · C: duck · F: special · Space: jump · Combos: JJJ rush · JJK rising kick · KK spin kick · KJ uppercut · in the air: J air jab · JK meteor smash · K dive kick · KK tornado'}</p>
+    <p class="pr-help">${isTouch ? 'Drag to move · buttons to fight' : 'W A S D move · R or double-tap: run · J/click: jab · K/right-click: hook kick · Shift: block · C: duck · F: special · Space: jump · Combos: JJJ rush · JJK rising kick · KK spin kick · KJ uppercut · in the air: J air jab · JK meteor smash · K dive kick · KK tornado'}</p>
     <button class="pr-exit">◀ Back to editor</button>
     ${isTouch ? `<div class="pr-pad">${['punch', 'kick', 'block', 'dodge', 'special', 'jump'].map(k => `<button data-pr="${k}">${k.toUpperCase()}</button>`).join('')}</div>` : ''}`;
   host.appendChild(ui);
@@ -71,12 +71,15 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
     if (e.target.tagName === 'INPUT') return;
     keys.add(e.code);
     if (e.repeat) return;
+    if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) { // (double-tap a direction to run)
+      const t = performance.now(); if (S.lastTap && S.lastTap.code === e.code && t - S.lastTap.t < 300) S.runKey = e.code; S.lastTap = { code: e.code, t };
+    }
     const k = { KeyJ: 'punch', KeyK: 'kick', KeyC: 'dodge', KeyF: 'special', Space: 'jump' }[e.code];
     if (k) { e.preventDefault(); doMove(k); }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') S.block = true;
     if (e.code === 'Escape') onExit();
   };
-  const onKeyUp = e => { keys.delete(e.code); if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') S.block = false; };
+  const onKeyUp = e => { keys.delete(e.code); if (S.runKey === e.code) S.runKey = null; if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') S.block = false; };
   const onMouse = e => { if (e.button === 0) doMove('punch'); if (e.button === 2) doMove('kick'); };
   const noMenu = e => e.preventDefault();
   let drag = null;
@@ -123,12 +126,15 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
     if (keys.has('KeyW') || keys.has('ArrowUp')) fwd++; if (keys.has('KeyS') || keys.has('ArrowDown')) fwd--;
     if (keys.has('KeyD') || keys.has('ArrowRight')) side++; if (keys.has('KeyA') || keys.has('ArrowLeft')) side--;
     if (drag) { if (Math.abs(drag.dy) > 12) fwd = Math.max(-1, Math.min(1, -drag.dy / 50)); if (Math.abs(drag.dx) > 12) side = Math.max(-1, Math.min(1, drag.dx / 50)); }
-    let mx = c * fwd - s * side, mz = s * fwd + c * side, speed = (S.block ? FT.BLOCK_SPEED : 1) * Sh.C.PLAYER_SPEED * U;
+    let mx = c * fwd - s * side, mz = s * fwd + c * side;
+    const moving = Math.hypot(mx, mz) > 0.01;
+    S.running = !S.block && moving && (keys.has('KeyR') || (S.runKey && keys.has(S.runKey)) || (drag && Math.hypot(drag.dx, drag.dy) > 90));
+    let speed = (S.block ? FT.BLOCK_SPEED : S.running ? FT.RUN : 1) * Sh.C.PLAYER_SPEED * U;
     if (now < S.dodgeUntil) { if (!mx && !mz) { mx = -c; mz = -s; } speed = FT.DODGE.speed * U; }
     if (S.act && FT[S.act.k].lunge && now - S.act.t0 < FT.LUNGE_T * 1000) { mx = c; mz = s; speed = FT[S.act.k].lunge / FT.LUNGE_T * U; } // (a combo move darts in)
     if (S.act && FT[S.act.k].beam) speed = 0; // (rooted while charging and firing a beam)
     const ml = Math.hypot(mx, mz);
-    if (ml > 0.01) { S.x += mx / ml * speed * dt; S.z += mz / ml * speed * dt; S.walk += dt * 12; } else S.walk = 0;
+    if (ml > 0.01) { S.x += mx / ml * speed * dt; S.z += mz / ml * speed * dt; S.walk += dt * (S.running ? 17 : 12); } else S.walk = 0;
     // don't walk through the dummy, or out of the room
     const dd = Math.hypot(S.x - D.x, S.z - D.z);
     if (dd < 0.7) { S.x = D.x + (S.x - D.x) / (dd || 1) * 0.7; S.z = D.z + (S.z - D.z) / (dd || 1) * 0.7; }
@@ -165,7 +171,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
 
     // ---- drawing: poses, positions, the camera behind you, the overlay
     const myPose = now < S.dodgeUntil ? { k: 'dodge', p: 1 - (S.dodgeUntil - now) / (FT.DODGE.t * 1000) } : S.act ? { k: S.act.k, p: (now - S.act.t0) / S.act.dur, side: S.act.side } : S.jumpT >= 0 ? { k: 'jump', p: S.jumpT / FT.JUMP_T } : S.block ? { k: 'block', p: 1 } : null;
-    poseFighter(me, myPose || (now < D.koUntil ? { k: 'win', p: 0.5 } : null), myPose ? 0 : S.walk, { f: fwd, s: side }); // (knock it out: celebrate)
+    poseFighter(me, myPose || (now < D.koUntil ? { k: 'win', p: 0.5 } : null), myPose ? 0 : S.walk, moving ? { f: mx * c + mz * s, s: mz * c - mx * s, run: S.running } : null); // (knock it out: celebrate)
     me.position.set(S.x, S.jumpT >= 0 ? Math.sin(Math.PI * S.jumpT / FT.JUMP_T) * FT.JUMP_H : 0, S.z); me.rotation.y = -S.a;
     const hitE = (now - (D.hitAt || -1e9)) / 1000, hitD = FT.HIT_T[D.hitK] || 0.3;
     const guE = (now - (D.getupAt || -1e9)) / 1000;

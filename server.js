@@ -247,7 +247,8 @@ function onPos(r, c, m) {
   const x = Number(m.x), y = Number(m.y), now = Date.now();
   const dt = (now - p.lastPosT) / 1000;
   let speed = PLAYER_SPEED * (p.role === 'it' ? TAGGER_SPEED : 1);
-  if (fighting) speed = (now < p.boostUntil ? 600 : PLAYER_SPEED * (p.block ? Sh.FIGHT.BLOCK_SPEED : 1)) + (now < p.kbUntil ? 420 : 0);
+  if (fighting) p.run = !!m.r && !p.block; // (running)
+  if (fighting) speed = (now < p.boostUntil ? 600 : PLAYER_SPEED * (p.block ? Sh.FIGHT.BLOCK_SPEED : p.run ? Sh.FIGHT.RUN : 1)) + (now < p.kbUntil ? 420 : 0);
   const allowed = speed * Math.max(dt, 0.05) * 1.6 + 10;
   const fl = Number.isFinite(x) && Number.isFinite(y) ? Sh.nextFloor(g, x, y, p.fl) : p.fl; // walking up or down a staircase
   if (!Number.isFinite(x) || !Number.isFinite(y) || Math.hypot(x - p.x, y - p.y) > allowed || Sh.collides(Sh.world(g, fl), x, y, PLAYER_R - 3)) {
@@ -393,7 +394,7 @@ function sendSnapshots(r) {
       id: p.id, x: Math.round(p.x), y: Math.round(p.y), a: Math.round(p.yaw * 100) / 100,
       fz: p.frozen, imm: p.immune > 0, tags: p.tags, f: p.fl, j: p.jumps, sc: Math.floor(p.score), k: p.hasKey, u: p.unlocked, e: p.escaped,
       ...(g.mode === 'fight' ? { hp: p.hp, mt: Math.floor(p.meter), ak: p.act ? p.act.k : null, sd: p.act ? p.act.side : null, at: p.act ? Math.round((g.time - p.act.t0) * 100) / 100 : 0,
-        bk: p.block, st: g.time < p.stunUntil, dg: g.time < p.dodgeUntil, ay: p.air ? Math.round(p.air.y * 100) / 100 : 0, gu: g.time < (p.getupUntil || 0) } : {}),
+        bk: p.block, rn: !!p.run, st: g.time < p.stunUntil, dg: g.time < p.dodgeUntil, ay: p.air ? Math.round(p.air.y * 100) / 100 : 0, gu: g.time < (p.getupUntil || 0) } : {}),
     })),
   };
   if (g.mode === 'fight') Object.assign(shared, {
