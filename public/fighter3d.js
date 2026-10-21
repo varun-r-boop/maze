@@ -25,8 +25,10 @@ export const SHAPES = {
   capsule: { name: 'Capsule', t: 'capsule', s: [0.14, 0.34, 0.14] }, torus: { name: 'Ring', t: 'torus', s: [0.3, 0.06, 0.3] },
   curly: { name: 'Curly hair', t: 'curly', s: [0.34, 0.22, 0.34] }, longhair: { name: 'Long hair', t: 'longhair', s: [0.34, 0.42, 0.34] },
   eye: { name: 'Eye', t: 'eye', s: [0.09, 0.09, 0.09] }, horn: { name: 'Horn / tail', t: 'horn', s: [0.07, 0.3, 0.07] },
+  blade: { name: 'Curved blade', t: 'blade', s: [0.18, 0.55, 0.03] }, spike: { name: 'Spike / fin', t: 'spike', s: [0.09, 0.24, 0.02] },
+  spear: { name: 'Spear', t: 'spear', s: [0.05, 1.3, 0.05] }, coat: { name: 'Long coat', t: 'coat', s: [0.4, 0.55, 0.4] },
 };
-export const SEPARATE = new Set(['curly', 'longhair', 'eye', 'horn']); // (pieces made separately, not part of the body)
+export const SEPARATE = new Set(['curly', 'longhair', 'eye', 'horn', 'blade', 'spike', 'spear', 'coat']); // (pieces made separately, not part of the body)
 export const MIRROR_BONE = { armL: 'armR', armR: 'armL', foreL: 'foreR', foreR: 'foreL', legL: 'legR', legR: 'legL', shinL: 'shinR', shinR: 'shinL' };
 // the training dummy in "Try it out": a jointed grey mannequin, like an artist's wooden figure
 export function dummyParts(c) {
@@ -148,6 +150,20 @@ export function makeSeparate(q) {
   } else if (q.t === 'longhair') { // a cap, with hair falling down the back
     add(new THREE.SphereGeometry(0.5, 24, 14, 0, Math.PI * 2, 0, Math.PI * 0.6), mat(q.c)).scale.set(w, hgt * 0.55, d);
     add(new THREE.CylinderGeometry(0.5, 0.42, 1, 20, 1, false, Math.PI * 0.35, Math.PI * 1.3), mat(q.c, { side: THREE.DoubleSide }), 0, -hgt * 0.42, 0).scale.set(w, hgt * 0.9, d);
+  } else if (q.t === 'blade') { // a curved blade: a flat crescent, bulging out along x, as tall as it is high
+    const s = new THREE.Shape(); s.moveTo(0, -hgt / 2); s.quadraticCurveTo(w * 1.4, 0, 0, hgt / 2); s.quadraticCurveTo(w * 0.5, -hgt * 0.05, 0, -hgt / 2);
+    add(new THREE.ExtrudeGeometry(s, { depth: d, bevelEnabled: false, curveSegments: 16 }).translate(0, 0, -d / 2), mat(q.c));
+  } else if (q.t === 'spike') { // a spike or fin: a flat sharp triangle pointing along y (spiky hair, a crest, collar points)
+    const s = new THREE.Shape(); s.moveTo(-w / 2, -hgt / 2); s.lineTo(w / 2, -hgt / 2); s.lineTo(w * 0.15, hgt / 2); s.closePath();
+    add(new THREE.ExtrudeGeometry(s, { depth: d, bevelEnabled: false }).translate(0, 0, -d / 2), mat(q.c));
+  } else if (q.t === 'spear') { // a spear: a long pole along y with a leaf-shaped blade on top and a ring under it
+    const r = Math.min(w, d) * 0.35, L = hgt * 0.2;
+    add(new THREE.CylinderGeometry(r, r, hgt, 10), mat(q.c));
+    const s = new THREE.Shape(); s.moveTo(0, 0); s.quadraticCurveTo(w * 1.3, L * 0.35, 0, L); s.quadraticCurveTo(-w * 1.3, L * 0.35, 0, 0);
+    add(new THREE.ExtrudeGeometry(s, { depth: r * 1.2, bevelEnabled: false, curveSegments: 10 }).translate(0, 0, -r * 0.6), mat(q.c), 0, hgt / 2);
+    add(new THREE.TorusGeometry(r * 1.8, r * 0.6, 6, 16).rotateX(Math.PI / 2), mat(q.c), 0, hgt / 2);
+  } else if (q.t === 'coat') { // a long coat: a flared skirt, open at the front, hanging from the hips
+    add(new THREE.CylinderGeometry(w * 0.32, w * 0.62, hgt, 28, 1, true, Math.PI * 0.62, Math.PI * 1.76), mat(q.c, { side: THREE.DoubleSide })).scale.set(1, 1, d / w);
   } else { // a horn (or a tail): a curved, tapering tube along y
     const curve = new THREE.QuadraticBezierCurve3(new THREE.Vector3(0, -hgt * 0.5, 0), new THREE.Vector3(hgt * 0.35, 0, 0), new THREE.Vector3(hgt * 0.15, hgt * 0.5, 0));
     const seg = 16, rad = 8, tube = new THREE.TubeGeometry(curve, seg, Math.min(w, d) / 2, rad, false), p = tube.attributes.position;
@@ -204,6 +220,7 @@ export function makeFighter(f) {
   root.userData = { bones, fighter: true, live: true, eye: H.height - 0.23, height: H.height };
   addOrbs(bones, root);
   root.traverse(o => { if (o.isMesh) o.material = o.material.clone(); }); // (each fighter fades on their own)
+  if (f) applyLook(root, { style: f.style, line: f.line }); // (flat ink, an outline)
   poseFighter(root, null, 0);
   return root;
 }
@@ -222,16 +239,46 @@ function auraTexture() { // a tall glow with flame tongues licking up from it
   auraTex = new THREE.CanvasTexture(c); auraTex.colorSpace = THREE.SRGBColorSpace;
   return auraTex;
 }
+// The look: 'flat' swaps every material for an unlit one (no shading: a black body is a pure silhouette, colors stay
+// bright like ink), 'shaded' puts the lit ones back. line: an outline color round the whole fighter (or null): a copy
+// of each mesh drawn inside out and pushed out a little along its normals.
+const outlineMats = new Map();
+function outlineMat(c) {
+  if (!outlineMats.has(c)) {
+    const m = new THREE.MeshBasicMaterial({ color: c, side: THREE.BackSide });
+    m.onBeforeCompile = sh => { sh.vertexShader = sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  transformed += normalize(normal) * 0.013;'); };
+    m.customProgramCacheKey = () => 'fighter-outline';
+    outlineMats.set(c, m);
+  }
+  return outlineMats.get(c);
+}
+export function applyLook(root, look) {
+  const flat = look && look.style === 'flat', line = look && look.line, old = [];
+  root.traverse(o => { if (o.userData.outline) old.push(o); });
+  for (const o of old) o.parent.remove(o);
+  const meshes = [];
+  root.traverse(o => { if (o.isMesh && !o.userData.glow && !o.userData.skeleton) meshes.push(o); });
+  for (const o of meshes) {
+    const m = o.material;
+    if (flat && !o.userData.litMat) { o.userData.litMat = m; o.material = new THREE.MeshBasicMaterial({ color: m.color, vertexColors: m.vertexColors, side: m.side, transparent: m.transparent, opacity: m.opacity }); }
+    else if (!flat && o.userData.litMat) { o.material = o.userData.litMat; delete o.userData.litMat; }
+    if (!line) continue;
+    const ol = o.isSkinnedMesh ? new THREE.SkinnedMesh(o.geometry, outlineMat(line)) : new THREE.Mesh(o.geometry, outlineMat(line));
+    ol.userData = { outline: true, keepMaterial: true, noFade: true }; ol.raycast = () => {}; ol.frustumCulled = false;
+    if (o.isSkinnedMesh) { o.parent.add(ol); ol.bind(o.skeleton, o.bindMatrix); } else o.add(ol);
+  }
+}
+
 // Energy balls in the hands (hidden until a special charges), on the forearm bones at the hand; and the aura
 export function addOrbs(bones, root) {
   const H = bones.hips.userData;
-  const aura = new THREE.Sprite(new THREE.SpriteMaterial({ map: auraTexture(), color: '#5fd0ff', transparent: true, depthWrite: false })); // (normal blending: additive glow vanishes against the white arena)
+  const aura = new THREE.Sprite(new THREE.SpriteMaterial({ map: auraTexture(), color: '#5fd0ff', transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
   aura.position.y = H.height * 0.5; aura.visible = false; aura.userData = { keepMaterial: true, glow: true, noFade: true };
   root.add(aura); root.userData.aura = aura;
   root.userData.orbs = ['foreL', 'foreR'].map(b => {
     const m = () => new THREE.MeshBasicMaterial({ color: '#5fd0ff', transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
     const o = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), m()), halo = new THREE.Mesh(new THREE.SphereGeometry(1.9, 16, 12), m());
-    halo.material.opacity = 0.35; halo.material.blending = THREE.NormalBlending; o.add(halo); o.position.set(0.04, -0.25 * H.prop.arm, 0); o.visible = false;
+    halo.material.opacity = 0.35; o.add(halo); o.position.set(0.04, -0.25 * H.prop.arm, 0); o.visible = false;
     o.traverse(x => { x.userData.keepMaterial = true; x.userData.glow = true; x.userData.noFade = true; }); bones[b].add(o);
     return o;
   });
@@ -240,11 +287,11 @@ export function addOrbs(bones, root) {
 // length), a burst at the hands and a big ball at its head. setBeam() shapes it for a moment of its life.
 export function makeBeam() {
   const g = new THREE.Group(), tube = r => new THREE.CylinderGeometry(r, r, 1, 20, 1, true).rotateZ(-Math.PI / 2).translate(0.5, 0, 0);
-  const glow = o => new THREE.MeshBasicMaterial({ color: '#5fd0ff', transparent: true, opacity: o, depthWrite: false, side: THREE.DoubleSide });
+  const glow = o => new THREE.MeshBasicMaterial({ color: '#5fd0ff', transparent: true, opacity: o, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
   const core = new THREE.Mesh(tube(0.06), new THREE.MeshBasicMaterial({ color: '#ffffff' })), halo = new THREE.Mesh(tube(0.15), glow(0.65)), outer = new THREE.Mesh(tube(0.28), glow(0.25));
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), glow(0.6)), muzzle = new THREE.Mesh(new THREE.SphereGeometry(0.15, 16, 12), glow(0.7));
   g.add(core, halo, outer, head, muzzle); g.userData = { core, halo, outer, head, muzzle }; g.visible = false;
-  g.traverse(o => { o.userData.keepMaterial = true; });
+  g.traverse(o => { o.userData.keepMaterial = true; o.userData.glow = true; o.userData.noFade = true; }); // (left alone by the look and the fades)
   return g;
 }
 // kind, its full length, how long it's been out and how long it lasts (seconds), the time (for the flicker)
@@ -336,6 +383,50 @@ export function poseFighter(model, pose, walk, move) {
     R.hips = [0.15 * ch, -0.3 * ch + 0.45 * hook, 0.1 * ch]; R.torso = [-0.1 * ch, -0.1 - 0.3 * ch + 0.25 * hook, -0.05 + 0.4 * ch]; R.head = [0, 0.1 + 0.3 * ch - 0.35 * hook, -0.25 * ch];
     R.armL = [-0.2, 0, 0.45]; R.foreL[2] = 1.8; R.armR = [0.2 + 0.3 * hook, 0, 0.2 - 0.6 * hook]; R.foreR[2] = 1.95 - 1.1 * hook; // (the arm swings back for balance)
     hy += 0.015 * ch;
+  } else if (k === 'rush') { // a flurry: three quick punches, right, left, right, leaning in
+    rate = 50;
+    const cyc = Math.min(2.999, p / 0.62 * 3), idx = Math.floor(cyc), x = Math.sin(Math.PI * (cyc - idx)), J = idx % 2 ? 'L' : 'R', O = J === 'R' ? 'L' : 'R', g2 = J === 'R' ? 1 : -1;
+    R['arm' + J] = [g2 * 0.1 * (1 - x), 0, (J === 'R' ? 0.21 : 0.36) + 1.35 * x]; R['fore' + J][2] = (J === 'R' ? 1.95 : 1.75) * (1 - x) + 0.04 * x;
+    R['arm' + O] = [-g2 * 0.15, 0, 0.35]; R['fore' + O][2] = 1.9;
+    R.torso[1] = -0.1 + 0.35 * g2 * x; R.torso[2] = -0.2; R.head[1] = 0.1 - 0.3 * g2 * x; hx = 0.05; SM['fore' + J] = 1 + 0.3 * x;
+  } else if (k === 'rising') { // a rising kick: the leg swings straight up in front, body leaning back, up on the toes
+    rate = 40;
+    const u = kf(p, [0, 0], [0.26, 1], [0.5, 1], [0.8, 0]);
+    R.legR = [0, 0, -0.12 + 2.7 * u]; R.shinR[2] = -0.3 * (1 - u); R.legL[2] = 0.05; R.shinL[2] = -0.25;
+    R.torso = [0, -0.1, -0.06 + 0.45 * u]; R.head[2] = -0.25 * u; R.armL = [-0.3, 0, -0.4 * u + 0.36 * (1 - u)]; R.armR = [0.3, 0, -0.5 * u + 0.21 * (1 - u)];
+    hy += 0.05 * u; SM.shinR = 1 + 0.25 * kf(p, [0.16, 0], [0.24, 1], [0.34, 0]);
+  } else if (k === 'spin') { // a spin kick: a full turn on the standing leg with the other leg swung straight out
+    rate = 45;
+    const turn = ease(kf(p, [0.05, 0], [0.55, 1])), ex = kf(p, [0.1, 0], [0.22, 1], [0.5, 1], [0.7, 0]);
+    R.hips = [0.15 * ex, -turn * TAU, 0]; R.legR = [-1.3 * ex, 0, -0.12 + 0.5 * ex]; R.shinR[2] = -0.3 * (1 - ex);
+    R.legL[2] = 0.1; R.shinL[2] = -0.4; R.torso = [-0.2 * ex, -0.1, -0.06]; R.armL = [1.0 * ex, 0, 0.36]; R.armR = [-0.6 * ex, 0, 0.21];
+    SM.legR = 1 + 0.15 * ex; SM.shinR = 1 + 0.3 * kf(p, [0.22, 0], [0.32, 1], [0.45, 0]);
+  } else if (k === 'upper') { // an uppercut: drop low, then drive the right fist straight up, rising with it
+    rate = 45;
+    const c = kf(p, [0, 0], [0.1, 1], [0.22, 0]), u = kf(p, [0.1, 0], [0.22, 1], [0.45, 1], [1, 0]);
+    R.armR = [0.1, 0, 0.21 + 2.5 * u]; R.foreR[2] = 1.95 * (1 - u) + 0.5 * u; R.armL = [-0.15, 0, 0.3]; R.foreL[2] = 1.9;
+    R.torso = [0, -0.1 + 0.45 * u, -0.06 - 0.25 * c + 0.25 * u]; R.head[2] = 0.2 * u;
+    R.shinL[2] -= 0.5 * c; R.shinR[2] -= 0.5 * c; R.legL[2] += 0.3 * c; hy += -0.08 * c + 0.05 * u; SM.foreR = 1 + 0.3 * kf(p, [0.12, 0], [0.2, 1], [0.32, 0]);
+  } else if (k === 'airjab') { // an air jab: knees tucked, a quick straight punch
+    rate = 50;
+    const x = kf(p, [0, 0], [0.2, 1], [0.45, 1], [1, 0]);
+    R.armR = [0.1 - 0.1 * x, 0, 0.21 + 1.35 * x]; R.foreR[2] = 1.95 * (1 - x) + 0.04 * x; R.armL = [-0.2, 0, 0.45]; R.foreL[2] = 1.9;
+    R.torso = [0, -0.1 + 0.4 * x, -0.15]; R.legL[2] = 0.9; R.shinL[2] = -1.4; R.legR[2] = 0.5; R.shinR[2] = -1.0; SM.foreR = 1 + 0.3 * kf(p, [0.1, 0], [0.2, 1], [0.32, 0]);
+  } else if (k === 'airspike') { // a meteor smash: both fists raised high, then hammered down in front
+    rate = 45;
+    const up = kf(p, [0, 0], [0.15, 1], [0.25, 0]), dn = kf(p, [0.15, 0], [0.27, 1], [0.6, 1], [1, 0]);
+    R.armL = [-0.2, 0, 0.36 + 2.5 * up + 0.4 * dn]; R.armR = [0.2, 0, 0.21 + 2.6 * up + 0.5 * dn]; R.foreL[2] = R.foreR[2] = 0.3 + 1.4 * (1 - up - dn);
+    R.torso = [0, -0.1, -0.06 + 0.3 * up - 0.55 * dn]; R.head[2] = -0.2 * up + 0.3 * dn; R.legL[2] = 0.8; R.shinL[2] = -1.3; R.legR[2] = 0.6; R.shinR[2] = -1.1;
+  } else if (k === 'tornado') { // a tornado kick: two quick turns in the air, legs swung out
+    rate = 50;
+    const turn = kf(p, [0.05, 0], [0.75, 1]), ex = kf(p, [0.05, 0], [0.15, 1], [0.6, 1], [0.8, 0]);
+    R.hips = [0, -turn * TAU * 2, 0]; R.legR = [-1.2 * ex, 0, 0.3]; R.shinR[2] = -0.2; R.legL = [0.5 * ex, 0, 0.9 * ex]; R.shinL[2] = -1.0;
+    R.armL = [0.9 * ex, 0, 0.36]; R.armR = [-0.6 * ex, 0, 0.21]; SM.shinR = 1 + 0.25 * ex;
+  } else if (k === 'divekick') { // a dive kick: tipped forward in the air, one leg driving down at them, the other tucked
+    rate = 45;
+    const d = kf(p, [0, 0], [0.12, 1], [0.7, 1], [1, 0]);
+    R.hips[2] = -0.55 * d; R.legR = [0, 0, -0.12 + 1.0 * d]; R.shinR[2] = -0.3 * (1 - d); R.legL[2] = 0.25 + 1.0 * d; R.shinL[2] = -0.42 - 1.4 * d;
+    R.torso[2] = -0.06 - 0.25 * d; R.armL = [-0.3, 0, 0.36 - 0.9 * d]; R.armR = [0.3, 0, 0.21 - 0.9 * d]; SM.shinR = 1 + 0.2 * d;
   } else if (k === 'kamehameha' || k === 'finalflash') {
     rate = 30;
     const f = fireAt(k), grow = Math.min(1, p / f);
@@ -363,11 +454,11 @@ export function poseFighter(model, pose, walk, move) {
   } else if (k === 'hit') { // taking a hit: a jab snaps the head back and round, a hook kick folds you sideways, a beam blows you back
     rate = 40;
     const kind = pose.kind || 'punch', hs = side === 'L' ? 1 : -1;
-    if (kind === 'punch') {
+    if (kind === 'punch' || kind === 'rush' || kind === 'upper' || kind === 'airjab') {
       const q = kf(p, [0, 0], [0.12, 1], [1, 0]);
       R.head = [0.25 * hs * q, 0.1 + 0.4 * hs * q, 0.06 + 0.45 * q]; R.torso[2] += 0.15 * q; R.torso[1] += 0.12 * hs * q;
       R.armL[2] -= 0.12 * q; R.armR[2] -= 0.12 * q; hx = -0.04 * q;
-    } else if (kind === 'kick') {
+    } else if (kind === 'kick' || kind === 'rising' || kind === 'divekick' || kind === 'airspike' || kind === 'tornado') {
       const q = kf(p, [0, 0], [0.15, 1], [0.45, 1], [1, 0]);
       R.torso = [0.35 * q, -0.1, -0.06 - 0.3 * q]; R.head = [0.3 * q, 0.1, -0.1 * q];
       R.armL = [-0.3, 0, 0.15 + 0.2 * (1 - q)]; R.foreL[2] = 1.4; R.armR = [0.3, 0, 0.1 + 0.1 * (1 - q)]; R.foreR[2] = 1.5; // (arms down, covering the body)

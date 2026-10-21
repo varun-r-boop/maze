@@ -66,15 +66,34 @@
     // for `beam` seconds, `len` px long and `w` px wide. Jump over it to dodge it.
     kamehameha: { dmg: 24, wind: 0.75, beam: 0.5, len: 340, w: 22, cd: 1.5, stun: 0.5, kb: 380 },
     finalflash: { dmg: 30, wind: 1.0, beam: 0.6, len: 400, w: 34, cd: 1.85, stun: 0.6, kb: 460 },
+    // combo moves: a sequence of jabs and kicks turns into a special attack (see COMBO_MOVES). hits: how many times it
+    // hits (every `every` s); launch: how hard it sends them up into the air; lunge: how far (px) you dart in as it starts
+    // (so it reaches someone a kick has just shoved back)
+    rush: { dmg: 4, hits: 3, every: 0.09, wind: 0.06, cd: 0.5, range: 55, arc: 1.0, stun: 0.34, lunge: 35 },
+    rising: { dmg: 12, wind: 0.16, cd: 0.62, range: 60, arc: 0.9, stun: 0.4, launch: 5.6, lunge: 45 },
+    spin: { dmg: 16, wind: 0.28, cd: 0.8, range: 80, arc: 3.2, stun: 0.45, kb: 420, lunge: 70 },
+    upper: { dmg: 11, wind: 0.12, cd: 0.55, range: 55, arc: 1.0, stun: 0.4, launch: 4.8, lunge: 75 },
+    divekick: { dmg: 14, wind: 0.08, cd: 0.5, range: 68, arc: 1.0, stun: 0.4, kb: 300, lunge: 60 },
+    LUNGE_T: 0.15, // (seconds the lunge takes)
+    // air moves (while you're jumping): J an air jab; J then K a meteor smash (hammers them into the floor, and they
+    // bounce back up: spike is how hard); K a dive kick, and K then K a tornado kick (a spinning double kick)
+    airjab: { dmg: 6, wind: 0.05, cd: 0.22, range: 58, arc: 1.1, stun: 0.34, lunge: 45 },
+    airspike: { dmg: 16, wind: 0.12, cd: 0.45, range: 66, arc: 1.0, stun: 0.5, spike: 7, lunge: 50 },
+    tornado: { dmg: 7, hits: 2, every: 0.12, wind: 0.08, cd: 0.45, range: 75, arc: 3.2, stun: 0.4, kb: 200, lunge: 40 },
+    // the sequences (checked in this order; each press must come within CHAIN seconds of the one before), and a kick
+    // while you're in the air is a dive kick
+    COMBO_MOVES: [['rush', ['punch', 'punch', 'punch']], ['rising', ['punch', 'punch', 'kick']], ['spin', ['kick', 'kick']], ['upper', ['kick', 'punch']]],
+    CHAIN: 0.95,
+    MOVE_NAMES: { rush: 'Rush', rising: 'Rising Kick', spin: 'Spin Kick', upper: 'Uppercut', divekick: 'Dive Kick', airspike: 'Meteor Smash', tornado: 'Tornado Kick' },
     // combos: hits that land within `window` seconds of each other chain; from the 3rd hit each does `scale` times less.
     // A ground combo is broken off (they're shoved away) after `breakAt` hits.
     COMBO: { window: 0.9, scale: 0.88, breakAt: 6 },
     // juggles: a kick as the 3rd hit of a combo (jab, jab, kick) launches them, and a beam always sends them flying.
     // While they're up, every hit pops them back up (less each time, `decay`; at most `max` times). Then they fall,
     // land and get up (`getup` seconds, nothing hits them). Heights in 3D units, `g` the gravity.
-    JUGGLE: { g: 11, launch: 5.4, pop: { punch: 2.4, kick: 3.8, kamehameha: 4.6, finalflash: 5.2 }, decay: 0.8, max: 6, getup: 0.55 },
-    HIT_T: { punch: 0.3, kick: 0.5, kamehameha: 0.8, finalflash: 0.9, block: 0.25 }, // seconds each hit reaction plays (block: a hit on your guard)
-    HIT_STOP: { punch: 0.06, kick: 0.12, kamehameha: 0.2, finalflash: 0.26, block: 0.05 }, // hit-stop: both fighters freeze for this long as a hit lands
+    JUGGLE: { bounce: 3.4, g: 11, launch: 5.4, pop: { punch: 2.4, kick: 3.8, kamehameha: 4.6, finalflash: 5.2 }, decay: 0.8, max: 6, getup: 0.55 },
+    HIT_T: { punch: 0.3, kick: 0.5, kamehameha: 0.8, finalflash: 0.9, block: 0.25, rush: 0.25, rising: 0.5, spin: 0.6, upper: 0.4, divekick: 0.5, airjab: 0.3, airspike: 0.5, tornado: 0.5 }, // seconds each hit reaction plays (block: a hit on your guard)
+    HIT_STOP: { punch: 0.06, kick: 0.12, kamehameha: 0.2, finalflash: 0.26, block: 0.05, rush: 0.04, rising: 0.12, spin: 0.15, upper: 0.11, divekick: 0.12, airjab: 0.05, airspike: 0.18, tornado: 0.08 }, // hit-stop: both fighters freeze for this long as a hit lands
     JUMP_T: 0.85, JUMP_H: 1.35, JUMP_PX: 46, // a fighter's jump: seconds in the air, how high (3D units, and px top-down)
   };
   // Building your own fighter: a character is a list of shapes dropped onto a skeleton. Each shape belongs to the body
@@ -85,7 +104,7 @@
   S.FIGHTER_PARTS = {
     // upper arm (shoulder to elbow), forearm (elbow to hand), thigh (hip to knee), shin (knee to foot), left and right
     bones: ['torso', 'head', 'hips', 'armL', 'foreL', 'armR', 'foreR', 'legL', 'shinL', 'legR', 'shinR'],
-    types: ['box', 'rbox', 'cylinder', 'sphere', 'cone', 'capsule', 'torus', 'curly', 'longhair', 'eye', 'horn'],
+    types: ['box', 'rbox', 'cylinder', 'sphere', 'cone', 'capsule', 'torus', 'curly', 'longhair', 'eye', 'horn', 'blade', 'spike', 'spear', 'coat'],
     max: 90,
   };
   S.FIGHT_SPECIALS = ['kamehameha', 'finalflash'];
@@ -96,28 +115,56 @@
     const parts = Array.isArray(f && f.parts) ? f.parts.slice(0, P.max)
       .filter(q => q && P.bones.includes(q.b) && P.types.includes(q.t))
       .map(q => ({ b: q.b, t: q.t, p: v3(q.p, -1.5, 1.5, 0), r: v3(q.r, -7, 7, 0), s: v3(q.s, 0.02, 1.2, 0.2), u: Math.round(num(q.u, 0.2, 3, 1) * 100) / 100,
-        c: /^#[0-9a-f]{6}$/i.test(q.c) ? q.c.toLowerCase() : '#cccccc', k: Math.round(num(q.k, 0, 1, 0.3) * 100) / 100, m: q.m ? 1 : 0 })) : null;
+        c: /^#[0-9a-f]{6}$/i.test(q.c) ? q.c.toLowerCase() : '#cccccc', k: Math.round(num(q.k, 0, 1, 0.3) * 100) / 100, m: q.m ? 1 : 0,
+        // (from the quick builder: which slot and option it came from, and whether it's in the body or the accent color)
+        ...(typeof q.g === 'string' && /^[a-z]{1,10}\.[a-z0-9]{1,12}$/.test(q.g) ? { g: q.g } : {}), ...(q.o === 'a' || q.o === 'b' ? { o: q.o } : {}) })) : null;
     // proportions: how long the arms, legs and body are (1 = like a person)
     const pr = f && f.prop && typeof f.prop === 'object' ? f.prop : {};
     const prop = { arm: Math.round(num(pr.arm, 0.6, 1.6, 1) * 100) / 100, leg: Math.round(num(pr.leg, 0.6, 1.5, 1) * 100) / 100, body: Math.round(num(pr.body, 0.6, 1.4, 1) * 100) / 100 };
-    return { special: S.FIGHT_SPECIALS.includes(f && f.special) ? f.special : 'kamehameha', parts: parts && parts.length ? parts : null, prop };
+    // the look: shaded (lit, 3D), or flat (ink: no shading, so a black body is a pure silhouette); and an outline color (or none)
+    const style = f && f.style === 'flat' ? 'flat' : 'shaded', line = f && /^#[0-9a-f]{6}$/i.test(f.line) ? f.line.toLowerCase() : null;
+    return { special: S.FIGHT_SPECIALS.includes(f && f.special) ? f.special : 'kamehameha', parts: parts && parts.length ? parts : null, prop, style, line };
   };
   // a hit lands (not blocked): counts the combo, launches or juggles. att and def are the fighters (they keep comboN,
   // comboUntil, air: { y, vy }, juggles); time is the game clock in seconds. Returns { n, mult, launch }.
   S.fightCombo = (att, def, kind, time) => {
-    const C = S.FIGHT.COMBO, J = S.FIGHT.JUGGLE, beam = !!S.FIGHT[kind].beam;
+    const C = S.FIGHT.COMBO, J = S.FIGHT.JUGGLE, spec = S.FIGHT[kind], beam = !!spec.beam;
     const n = def.air || time < (att.comboUntil || 0) ? (att.comboN || 0) + 1 : 1;
     att.comboN = n; att.comboUntil = time + C.window; def.comboN = 0;
     let launch = false;
-    if (def.air) { if ((def.juggles || 0) < J.max) { def.air.vy = Math.max(def.air.vy, (J.pop[kind] || 2) * Math.pow(J.decay, def.juggles || 0)); def.juggles = (def.juggles || 0) + 1; } }
-    else if ((kind === 'kick' && n >= 3) || beam) { def.air = { y: 0.01, vy: beam ? J.pop[kind] : J.launch }; def.juggles = 0; launch = true; }
+    if (spec.spike) { // a meteor smash: slammed down (and they'll bounce back up off the floor)
+      if (def.air) { def.air.vy = -spec.spike; def.air.bounce = true; } else { def.air = { y: 0.01, vy: J.bounce }; def.juggles = 0; }
+      return { n, mult: Math.pow(C.scale, Math.max(0, n - 2)), launch: false };
+    }
+    if (def.air) { if ((def.juggles || 0) < J.max) { def.air.vy = Math.max(def.air.vy, (J.pop[kind] || (spec.launch ? 4 : 2.6)) * Math.pow(J.decay, def.juggles || 0)); def.juggles = (def.juggles || 0) + 1; } }
+    else if ((kind === 'kick' && n >= 3) || beam || spec.launch) { def.air = { y: 0.01, vy: beam ? J.pop[kind] : spec.launch || J.launch }; def.juggles = 0; launch = true; }
     return { n, mult: Math.pow(C.scale, Math.max(0, n - 2)), launch };
+  };
+  // a jab or a kick is pressed: what move it turns into, from the presses before it (hist: [{ k, t }], kept by the
+  // caller; time in seconds; inAir: jumping)
+  S.fightNextMove = (hist, k, time, inAir) => {
+    const F = S.FIGHT;
+    if (hist.length && time - hist[hist.length - 1].t > F.CHAIN) hist.length = 0; // (too slow: start again)
+    if (inAir) { // in the air: an air jab, a dive kick, or the air combo it finishes
+      const prev = hist[hist.length - 1], pm = prev && prev.air ? prev.mv : null;
+      const mv = k === 'punch' ? 'airjab' : pm === 'airjab' ? 'airspike' : pm === 'divekick' ? 'tornado' : 'divekick';
+      if (mv === 'airspike' || mv === 'tornado') hist.length = 0; else hist.push({ k, t: time, air: true, mv });
+      return mv;
+    }
+    while (hist.length && hist[0].air) hist.shift(); // (on the ground: only what you pressed on the ground counts)
+    hist.push({ k, t: time });
+    for (const [move, seq] of F.COMBO_MOVES) {
+      if (hist.length >= seq.length && seq.every((s, i) => hist[hist.length - seq.length + i].k === s)) { hist.length = 0; return move; }
+    }
+    if (hist.length > 4) hist.splice(0, hist.length - 4);
+    return k;
   };
   // someone in the air: falls; true when they land
   S.fightAir = (p, dt) => {
     if (!p.air) return false;
     p.air.vy -= S.FIGHT.JUGGLE.g * dt; p.air.y += p.air.vy * dt;
     if (p.air.y > 0) return false;
+    if (p.air.bounce) { p.air = { y: 0.01, vy: S.FIGHT.JUGGLE.bounce }; return false; } // (smashed down: they bounce back up)
     p.air = null; return true;
   };
   // the colors you can paint your clay sculpture
@@ -681,11 +728,11 @@
     return L;
   }
 
-  // The fight arena: a plain white room. A fighting area in the middle with a low barrier all round it (fighters can't
+  // The fight arena: the dark neon stage. A big fighting area filling most of the room with a low barrier all round it (fighters can't
   // get out, spectators can't get in); everyone not fighting walks round the outside and watches.
   function genArena() {
     const g = [...Array(ROWS)].map((_, y) => Array(COLS).fill(0).map((_, x) => (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1) ? 1 : 0));
-    const ring = { x0: 12, y0: 9, x1: 28, y1: 21 };
+    const ring = { x0: 5, y0: 4, x1: 35, y1: 26 }; // (31 x 23 tiles; the stands are the strip round the outside)
     const inRing = (x, y) => x >= ring.x0 && x <= ring.x1 && y >= ring.y0 && y <= ring.y1 && // (with the corners cut off)
       Math.min(x - ring.x0, ring.x1 - x) + Math.min(y - ring.y0, ring.y1 - y) >= 2;
     for (let y = 1; y < ROWS - 1; y++) for (let x = 1; x < COLS - 1; x++) {
@@ -696,7 +743,7 @@
     }
     const benches = []; // (none: it's a plain room)
     const spawns = [];
-    for (let x = 13; x <= 27 && spawns.length < 12; x += 2) spawns.push([x, 7]), spawns.push([x, 23]);
+    for (let x = 8; x <= 32 && spawns.length < 12; x += 4) spawns.push([x, 2]), spawns.push([x, 28]);
     const fighters = [[15, 15], [25, 15]];
     // the stands must all join up, and so must the ring
     for (const [sx, sy, test] of [[spawns[0][0], spawns[0][1], (x, y) => !inRing(x, y)], [fighters[0][0], fighters[0][1], inRing]]) {

@@ -148,6 +148,7 @@ function onMsg(m) {
     case 'fround': if (G) { banner(`ROUND ${m.n}`, '#ffd54f', 1.6); } break;
     case 'fight': if (G) { banner('FIGHT!', '#ff5252', 1); playFight('bell'); } break;
     case 'hit': if (G) onHit(m); break;
+    case 'cmove': if (G) { G.moveHud = { by: m.by, k: m.k, t0: performance.now() }; playFight('swish'); } break; // (a combo move: its name on screen)
     case 'special': if (G) { playFight(m.kind); if (FT[m.kind]) screenFx('fx-letterbox', (FT[m.kind].wind + FT[m.kind].beam) * 1000 + 200); if (FT[m.kind]) setTimeout(() => G && G.mode === 'fight' && screenFx('fx-speed', FT[m.kind].beam * 1000 + 200, m.kind === 'finalflash' ? '#fff3a0' : '#bfefff'), FT[m.kind].wind * 1000); // (speed lines as the beam fires)
        if (m.by !== myId) addMsg(`${(G.players.get(m.by) || { name: '?' }).name}: ${(Sh.SPECIAL_NAMES[m.kind] || '').toUpperCase()}!`, '#ffb74d', 1.5); } break;
     case 'ko': if (G) { screenFx('fx-letterbox', FT.KO_PAUSE * 1000 - 300); banner(m.ko ? 'K.O.!' : m.w ? 'TIME!' : 'DRAW', '#ffd54f', 2.2); playFight('bell'); } break;
@@ -189,7 +190,7 @@ function renderHome() {
       <li><b>First / third person, PC:</b> click the game to look around with the mouse (Esc frees it). W/S walk, A/D step sideways, ←/→ or Q/E turn. <b>Phone:</b> drag up/down to walk, left/right to turn.</li>
       <li><b>Hide clay</b> (a second game mode): everyone sculpts something out of clay, then hides it somewhere on the map. Then everyone is given someone else's sculpture to find. Find it fast for points; your own sculpture earns points for every second it stays hidden. <b>F</b> (or a left-click) hides your sculpture and picks up the one you're hunting.</li>
       <li><b>Key escape</b> (a third mode, also on your own): everyone has their own gold <b>key</b> hidden somewhere; it only shows up in your light. Find it and take it to the <b>EXIT gate</b> (the square on your minimap) to unlock your lock. The gate only opens once <b>everyone</b> has unlocked theirs; then walk through to escape. A <b style="color:#ff5252">bot</b> hunts you (more with lots of players), and if it catches you you're frozen until a friend unfreezes you. It can't get you in the green <b style="color:#69f0ae">safe box</b>, but the box moves every ${Sh.C.ZONE_TIME} seconds.</li>
-      <li><b>Arena fights</b> (a fourth mode): make your own fighter, then everyone goes into a knockout bracket of 1 v 1 fights, best of 3 rounds. <b>Punch</b> (left and right jabs, in turn): left-click or J. <b>Hook kick</b>: right-click or K. <b>Block</b>: hold Shift. <b>Dodge</b>: C. <b>Special</b> (when its meter is full): F, a Kamehameha or a Final Flash beam. <b>Jump</b> high with Space: you can jump over a beam.</li>
+      <li><b>Arena fights</b> (a fourth mode): make your own fighter, then everyone goes into a knockout bracket of 1 v 1 fights, best of 3 rounds. <b>Punch</b> (left and right jabs, in turn): left-click or J. <b>Hook kick</b>: right-click or K. <b>Combo moves</b>: J J J rush, J J K rising kick, K K spin kick, K J uppercut. <b>In the air</b> (jump first): J air jab, J then K meteor smash, K dive kick, K then K tornado kick. <b>Block</b>: hold Shift. <b>Dodge</b>: C. <b>Special</b> (when its meter is full): F, a Kamehameha or a Final Flash beam. <b>Jump</b> high with Space: you can jump over a beam.</li>
       <li>Press <b>Space</b> to jump (or double-tap on a phone). Jump over a noise trap and it stays quiet.</li>
       <li>Press <b>V</b> during a game to switch views, and <b>M</b> to turn the music on or off.</li>
     </ul></details>`;
@@ -1696,10 +1697,11 @@ function fightInput(a) {
     if ((meP.mt || 0) < 100) { addMsg("Your special isn't ready: land (or take) some hits to fill the meter.", '#ffcc80', 1.6); return; }
     k = meP.fighter.special;
   }
+  if (k === 'punch' || k === 'kick') k = Sh.fightNextMove(G.hist || (G.hist = []), k, now / 1000, G.jumpT >= 0); // (a combo move?)
   if (k === 'punch') G.jab = G.jab === 'L' ? 'R' : 'L'; // (jabs: left, right, left...)
   G.myAct = { k, t0: now, dur: Math.max(FT[k].cd, FT[k].wind + 0.05) * 1000, side: k === 'punch' ? G.jab : null };
   send({ t: 'fx', a });
-  if (k === 'punch' || k === 'kick') playFight('swish');
+  if (k !== meP.fighter.special) playFight('swish');
 }
 function setBlock(on) {
   if (!G || G.mode !== 'fight') return;
@@ -1713,7 +1715,7 @@ function screenFx(cls, ms, col) {
   document.body.appendChild(d); setTimeout(() => { d.classList.add('out'); setTimeout(() => d.remove(), 300); }, ms);
 }
 function onHit(m) {
-  const big = m.kind !== 'punch';
+  const big = m.kind !== 'punch' && m.kind !== 'rush' && m.kind !== 'airjab';
   if (!m.miss) { // a burst where it lands, a split-second freeze, and for a big clean hit an impact frame
     const kind = m.blocked ? 'block' : m.kind, now = performance.now();
     G.sparks.push({ id: ++G.sparkN, x: m.x, y: m.y, kind, t0: now });
@@ -1724,7 +1726,7 @@ function onHit(m) {
   }
   const v = G.players.get(m.to), att = G.players.get(m.by);
   if (v && !m.miss) Object.assign(v, { hitAt: performance.now(), hitK: m.blocked ? 'block' : m.kind, hitSide: m.by === myId ? G.myAct && G.myAct.side : att && att.sd }); // (they react to it)
-  G.fx.push({ x: m.x, y: m.y, t: 0.7, d: 0.7, text: m.miss ? 'MISS' : m.blocked ? 'BLOCK' : { punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH' }[m.kind], dmg: m.miss ? 0 : m.dmg, color: m.miss ? '#b9b5d6' : m.blocked ? '#7fd4ff' : big ? '#ff8a3d' : '#ffe066', big });
+  G.fx.push({ x: m.x, y: m.y, t: 0.7, d: 0.7, text: m.miss ? 'MISS' : m.blocked ? 'BLOCK' : { punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH', rush: 'RUSH', rising: 'RISE', spin: 'SPIN', upper: 'UPPER', divekick: 'DIVE', airjab: 'POW', airspike: 'SMASH', tornado: 'SPIN' }[m.kind], dmg: m.miss ? 0 : m.dmg, color: m.miss ? '#b9b5d6' : m.blocked ? '#7fd4ff' : big ? '#ff8a3d' : '#ffe066', big });
   playFight(m.miss ? 'swish' : m.blocked ? 'block' : big ? 'kick' : 'punch');
   if (m.to === myId && !m.miss && !m.blocked) G.shake = big ? 0.35 : 0.15;
 }
@@ -1757,6 +1759,7 @@ function fightSteer(dt, mx, my, speed, stuck) {
     return { mx: mx / l, my: my / l, speed: FT.DODGE.speed, still: false };
   }
   if (G.myAct && FT[G.myAct.k].beam) return { mx: 0, my: 0, speed, still: true };
+  if (G.myAct && FT[G.myAct.k].lunge && now - G.myAct.t0 < FT.LUNGE_T * 1000) return { mx: Math.cos(aim), my: Math.sin(aim), speed: FT[G.myAct.k].lunge / FT.LUNGE_T, still: false }; // (a combo move darts in)
   if (o) { // don't walk through each other
     const dx = G.me.x - o.rx, dy = G.me.y - o.ry, d = Math.hypot(dx, dy);
     if (d < 30 && d > 0.1) { const push = Math.min(30 - d, 160 * dt); Sh.moveCircle(G, G.me, dx / d * push, dy / d * push, PLAYER_R); }
@@ -1867,6 +1870,15 @@ function drawFightHud(meP, t) {
     ctx.textAlign = 'center'; ctx.font = 'bold 22px system-ui'; ctx.fillStyle = G.fp === 'fight' && G.left < 10 ? '#ff5252' : '#fff';
     ctx.fillText(G.fp === 'fight' ? String(Math.ceil(G.left)) : G.fp === 'intro' ? `${Math.ceil(G.left)}` : '—', W / 2, 26);
     ctx.font = 'bold 11px system-ui'; ctx.fillStyle = '#b9b5d6'; ctx.fillText(`ROUND ${fm.rn}`, W / 2, 48);
+    // a combo move: its name, big and slanted, on the side of whoever did it
+    const mh = G.moveHud, ma = mh ? (performance.now() - mh.t0) / 1000 : 9;
+    if (mh && ma < 1.2) {
+      const left = mh.by === fm.a, pop = 1 + 0.4 * Math.max(0, 1 - ma / 0.12);
+      ctx.save(); ctx.globalAlpha = Math.min(1, (1.2 - ma) * 3); ctx.translate(left ? 40 : W - 40, 160); ctx.rotate(-0.12); ctx.scale(pop, pop); ctx.textAlign = left ? 'left' : 'right';
+      ctx.font = 'italic 900 26px system-ui'; ctx.lineWidth = 6; ctx.strokeStyle = '#1a0a00'; ctx.fillStyle = '#7fd4ff';
+      const name = (FT.MOVE_NAMES[mh.k] || mh.k).toUpperCase() + '!'; ctx.strokeText(name, 0, 0); ctx.fillText(name, 0, 0);
+      ctx.restore();
+    }
     // the combo counter: big slanted "N HITS" on the side of whoever's combo it is
     const ch = G.comboHud, ca = ch ? (performance.now() - ch.t0) / 1000 : 9;
     if (ch && ca < 1.4) {
@@ -1915,7 +1927,7 @@ function drawFightHud(meP, t) {
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.font = 'bold 14px system-ui'; ctx.fillStyle = COLORS[meP.slot]; ctx.fillText(meP.name, x + 14, y + 20);
   ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'right'; ctx.fillStyle = fighting ? '#ff8a80' : '#b388ff'; ctx.fillText(fighting ? 'FIGHTING' : 'WATCHING', x + w - 10, y + 20); ctx.textAlign = 'left';
   ctx.font = '12px system-ui'; ctx.fillStyle = '#e8e6f0';
-  ctx.fillText(fighting ? (isTouch ? 'Use the buttons · double-tap to jump' : 'Jab: click / J · Hook kick: right-click / K · Block: hold Shift · Duck: C · Special: F · Jump: Space')
+  ctx.fillText(fighting ? (isTouch ? 'Use the buttons · double-tap to jump' : 'Jab: J/click · Hook kick: K/right-click · Block: Shift · Duck: C · Special: F · Jump: Space · Combos: JJJ rush, JJK rising kick, KK spin kick, KJ uppercut · In the air: J air jab, JK meteor smash, K dive kick, KK tornado kick')
     : fm ? `${nameOf(fm.a)} vs ${nameOf(fm.b)}: watch from the stands` : 'Waiting for the next fight…', x + 14, y + 44);
 }
 

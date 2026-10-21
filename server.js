@@ -729,7 +729,7 @@ function startRound(r) {
   m.round++;
   [m.a, m.b].forEach((id, i) => {
     const p = fighterOf(g, id);
-    Object.assign(p, { hp: FT.HP, act: null, block: false, stunUntil: 0, dodgeUntil: 0, dodgeCd: 0, kbUntil: 0, boostUntil: 0, fl: 0, yaw: i ? Math.PI : 0, air: null, juggles: 0, getupUntil: 0, comboN: 0, comboUntil: 0 });
+    Object.assign(p, { hp: FT.HP, act: null, block: false, stunUntil: 0, dodgeUntil: 0, dodgeCd: 0, kbUntil: 0, boostUntil: 0, fl: 0, yaw: i ? Math.PI : 0, air: null, juggles: 0, getupUntil: 0, comboN: 0, comboUntil: 0, hist: [] });
     teleport(r, p, center(sp[i][0]), center(sp[i][1]), p.yaw);
   });
   g.beams = [];
@@ -776,8 +776,13 @@ function onFx(r, c, m) {
     return;
   }
   if (p.act || p.block) return;
-  if (k === 'punch') { p.jab = p.jab === 'L' ? 'R' : 'L'; p.act = { k, t0: g.time, side: p.jab }; } // (jabs: left, right, left...)
-  else if (k === 'kick') p.act = { k, t0: g.time };
+  if (k === 'punch' || k === 'kick') { // (a jab or a kick, or a combo move if it finishes a sequence)
+    const mv = Sh.fightNextMove(p.hist || (p.hist = []), k, g.time, Date.now() < p.airUntil);
+    if (mv === 'punch') p.jab = p.jab === 'L' ? 'R' : 'L'; // (jabs: left, right, left...)
+    p.act = { k: mv, t0: g.time, side: mv === 'punch' ? p.jab : null };
+    if (FT.MOVE_NAMES[mv]) broadcast(r, { t: 'cmove', by: p.id, k: mv });
+    if (FT[mv].lunge) p.boostUntil = Date.now() + FT.LUNGE_T * 1000 + 150; // (it darts in: allow the speed)
+  }
   else if (k === 'special' && p.meter >= 100) {
     p.meter = 0; p.act = { k: p.fighter.special, t0: g.time };
     broadcast(r, { t: 'special', by: p.id, kind: p.act.k });
@@ -802,9 +807,12 @@ function fightTick(r, dt) {
     const a = p.act;
     if (!a) continue;
     const spec = FT[a.k];
-    if (!a.done && g.time >= a.t0 + spec.wind) {
+    if (spec.hits) { // (a flurry: a hit every few moments)
+      a.n = a.n || 0;
+      while (a.n < spec.hits && g.time >= a.t0 + spec.wind + a.n * spec.every) { a.n++; if (inReach(p, o, spec.range, spec.arc)) landHit(r, p, o, a.k); }
+    } else if (!a.done && g.time >= a.t0 + spec.wind) {
       a.done = true;
-      if ((a.k === 'punch' || a.k === 'kick') && inReach(p, o, spec.range, spec.arc)) landHit(r, p, o, a.k);
+      if (spec.range && inReach(p, o, spec.range, spec.arc)) landHit(r, p, o, a.k);
       else if (spec.beam) g.beams.push({ x: p.x + Math.cos(p.yaw) * 16, y: p.y + Math.sin(p.yaw) * 16, a: p.yaw, k: a.k, o: p.id, t0: g.time, hit: false }); // (fired after the charge)
     }
     if (g.time >= a.t0 + Math.max(spec.cd, spec.wind + 0.05)) p.act = null;

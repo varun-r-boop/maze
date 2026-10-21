@@ -9,9 +9,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { buildRig, setTPose, addSkeleton, makeSeparate, makeBody, poseFighter, BONE_NAMES, BONE_ORDER, SHAPES, SEPARATE, MIRROR_BONE, BODY_PARTS, PROPS, setProportions, frameOf, addOrbs, makeBeam, setBeam } from './fighter3d.js';
+import { buildRig, setTPose, addSkeleton, makeSeparate, makeBody, poseFighter, BONE_NAMES, BONE_ORDER, SHAPES, SEPARATE, MIRROR_BONE, BODY_PARTS, PROPS, setProportions, frameOf, addOrbs, makeBeam, setBeam, applyLook } from './fighter3d.js';
 import { fighterParts } from './fighter.js';
 import { createPractice } from './practice.js';
+import { SLOTS, BUILDS, EXAMPLES, slotParts, slotChoices } from './fighterkit.js';
 
 const Sh = window.Shared, FT = Sh.FIGHT;
 export const SPECIAL_INFO = {
@@ -29,6 +30,8 @@ const ICON = {
   longhair: '<path d="M8 35V18a12 12 0 0 1 24 0v17"/><path d="M14 35V20a6 6 0 0 1 12 0v15"/>',
   eye: '<path d="M4 20c6-9 26-9 32 0-6 9-26 9-32 0z"/><circle cx="20" cy="20" r="5"/><circle cx="20" cy="20" r="1.5" fill="currentColor"/>',
   horn: '<path d="M8 32c6-1 14-8 16-16 1-5 0-9-2-11 6 2 9 9 7 16-3 8-11 12-21 11z"/>',
+  blade: '<path d="M14 4c18 6 18 26 0 32 7-8 7-24 0-32z"/>', spike: '<path d="M10 34h18L22 5z"/>',
+  spear: '<path d="M20 38V12"/><path d="M20 2c5 4 5 8 0 10-5-2-5-6 0-10z"/><path d="M15 13h10"/>', coat: '<path d="M14 6h12l7 30H22l-2-20-2 20H7z"/>',
 };
 
 // opts.practice: open straight into "Try it out"
@@ -36,6 +39,7 @@ export function openBuilder(host, start, onSave, opts = {}) {
   let parts = fighterParts(start).map(q => ({ ...JSON.parse(JSON.stringify(q)) }));
   let special = start.special, sel = -1, armed = null, preview = null, nextId = 1;
   let prop = { arm: 1, leg: 1, body: 1, ...(start.prop || {}) };
+  const look = { style: start.style === 'flat' ? 'flat' : 'shaded', line: start.line || null }; // (shaded or flat ink; an outline color)
   const set = { c: '#43a047', u: 1, k: 0, mirror: true, m: 0 }; // (k: no blending; parts keep their own shape)
   const twins = new Map(); // part id -> its mirror twin's id
   parts.forEach(q => { q._id = nextId++; });
@@ -50,12 +54,24 @@ export function openBuilder(host, start, onSave, opts = {}) {
     <div class="ce">
       <div class="ce-side">
         <h2>CHARACTER EDITOR</h2>
-        <div class="ce-tabs"><button data-tab="shape" class="on">CHARACTER<br>SHAPE</button><button data-tab="abil">CHARACTER<br>ABILITIES</button></div>
-        <div class="ce-pane" data-pane="shape">
-          <p class="ce-label">DRAG BODY PARTS ONTO YOUR CHARACTER</p>
-          <div class="ce-parts">${Object.entries(BODY_PARTS).map(([k, d]) => `<button data-shape="part:${k}">${d.name}</button>`).join('')}</div>
+        <div class="ce-tabs"><button data-tab="build" class="on">QUICK<br>BUILD</button><button data-tab="shape">CUSTOM<br>SHAPES</button><button data-tab="abil">CHARACTER<br>ABILITIES</button></div>
+        <div class="ce-pane" data-pane="build">
+          <p class="ce-label">START FROM AN EXAMPLE (OR BUILD YOUR OWN BELOW)</p>
+          <div class="ce-examples">${EXAMPLES.map(e => `<button data-ex="${e.id}"><i style="background:${e.body};box-shadow:inset -10px 0 0 ${e.accent}"></i>${e.name}</button>`).join('')}</div>
+          <p class="ce-label">COLORS</p>
+          ${['b', 'a'].map(r => `<div class="ce-kcol"><span>${r === 'b' ? 'BODY' : 'ACCENT'}</span>${COLORS.map(c => `<button data-kcol="${r}" data-c="${c}" style="background:${c}"></button>`).join('')}<input type="color" class="ce-kany" data-kany="${r}"></div>`).join('')}
+          <p class="ce-label">LOOK</p>
+          <div class="ce-look"><button data-look="shaded">Shaded</button><button data-look="flat">Flat (ink)</button></div>
+          <label class="ce-row"><span>OUTLINE</span><span><input type="checkbox" class="ce-line-on"> <input type="color" class="ce-line" value="#ff2bd6"></span></label>
+          <p class="ce-label">BUILD</p>
+          <div class="ce-builds">${Object.keys(BUILDS).map(k => `<button data-build="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
           <p class="ce-label">PROPORTIONS</p>
           ${Object.entries(PROPS).map(([k, n]) => `<label class="ce-row ce-prop"><span>${n.toUpperCase()}</span><input type="range" data-prop="${k}" min="0.6" max="${k === 'arm' ? 1.6 : k === 'leg' ? 1.5 : 1.4}" step="0.01"></label>`).join('')}
+          ${SLOTS.map(s => `<p class="ce-label">${s.name.toUpperCase()}</p><div class="ce-slot">${s.options.map(o => `<button data-slot="${s.id}" data-opt="${o[0]}">${o[1]}</button>`).join('')}</div>`).join('')}
+        </div>
+        <div class="ce-pane" data-pane="shape" hidden>
+          <p class="ce-label">DRAG BODY PARTS ONTO YOUR CHARACTER</p>
+          <div class="ce-parts">${Object.entries(BODY_PARTS).map(([k, d]) => `<button data-shape="part:${k}">${d.name}</button>`).join('')}</div>
           <p class="ce-label">OR ANY SHAPE</p>
           <div class="ce-shapes">${Object.entries(SHAPES).map(([k, d]) => `<button data-shape="${k}" title="${d.name}"><svg viewBox="0 0 40 40">${ICON[k]}</svg></button>`).join('')}</div>
           <div class="ce-colors">${COLORS.map(c => `<button data-col="${c}" style="background:${c}"></button>`).join('')}<input type="color" class="ce-any" title="Any color"></div>
@@ -68,6 +84,9 @@ export function openBuilder(host, start, onSave, opts = {}) {
         <div class="ce-pane" data-pane="abil" hidden>
           <p class="ce-label">SPECIAL MOVE</p>
           <div class="ce-specials">${Sh.FIGHT_SPECIALS.map(s => `<button data-sp="${s}"><b>${{ kamehameha: '🌀 Kamehameha', finalflash: '⚡ Final Flash' }[s]}</b><span>${SPECIAL_INFO[s]}</span></button>`).join('')}</div>
+          <p class="ce-label">COMBO MOVES (EVERY FIGHTER HAS THEM)</p>
+          <div class="ce-combos">${[['rush', 'J J J', 'A fast three-punch flurry'], ['rising', 'J J K', 'A kick straight up that launches them'], ['spin', 'K K', 'A full spin kick: hits all round and shoves them away'], ['upper', 'K J', 'Drop low and drive an uppercut: launches them'], ['divekick', 'Air: K', 'Kick down at them from the air'], ['airjab', 'Air: J', 'A quick punch in the air (keeps a launched fighter up)'], ['airspike', 'Air: J K', 'Meteor smash: hammer them into the floor; they bounce back up'], ['tornado', 'Air: K K', 'Tornado kick: a spinning double kick in the air']].map(([k, keys, info]) => `<button data-anim="${k}"><b>${Sh.FIGHT.MOVE_NAMES[k] || 'Air Jab'}</b> <kbd>${keys}</kbd><span>${info}</span></button>`).join('')}</div>
+          <p class="note">Press the keys one after another (not too slowly). "Air" moves are while you're jumping (Space): launch them with a Rising Kick or Uppercut, jump after them, then air jab and meteor smash them. Hits that land close together count up a combo. Click a combo move to see it.</p>
           <p class="note">Every fighter can also punch, kick, block and dodge. Try them with the buttons under your character, or press Try it out.</p>
         </div>
         <button class="ce-try">▶ Try it out</button>
@@ -114,6 +133,7 @@ export function openBuilder(host, start, onSave, opts = {}) {
     body = makeBody(clean(), bones, root);
     for (const p of pieces) p.parent.remove(p);
     pieces = parts.filter(q => SEPARATE.has(q.t)).map(q => { const g = makeSeparate(q); g.userData.partId = q._id; g.traverse(o => { if (o.isMesh) o.userData.partId = q._id; }); onBone(q.b).add(g); return g; });
+    applyLook(root, look); // (flat ink, an outline)
     placeProxy();
   }
   let rebuildT = 0, rebuildPending = false;
@@ -161,6 +181,13 @@ export function openBuilder(host, start, onSave, opts = {}) {
     $('[data-set="u"]').value = src.u; $('[data-set="m"]').checked = !!src.m; $('[data-set="mirror"]').checked = set.mirror;
     $$('[data-shape]').forEach(b => b.classList.toggle('armed', b.dataset.shape === armed));
     $$('[data-prop]').forEach(i => { i.value = prop[i.dataset.prop]; });
+    $$('[data-look]').forEach(b => b.classList.toggle('on', b.dataset.look === look.style));
+    const ch = slotChoices(parts);
+    $$('[data-slot]').forEach(b => b.classList.toggle('on', ch[b.dataset.slot] === b.dataset.opt));
+    $$('[data-kcol]').forEach(b => b.classList.toggle('on', kitCol[b.dataset.kcol] === b.dataset.c));
+    $$('[data-kany]').forEach(i => { i.value = kitCol[i.dataset.kany]; });
+    $$('[data-build]').forEach(b => { const B = BUILDS[b.dataset.build]; b.classList.toggle('on', ['arm', 'leg', 'body'].every(k => Math.abs(B[k] - prop[k]) < 0.005)); });
+    $('.ce-line-on').checked = !!look.line; if (look.line) $('.ce-line').value = look.line;
     $('.ce-sel').innerHTML = q ? `<div class="ce-selname">Picked: <b>${SHAPES[Object.keys(SHAPES).find(k => SHAPES[k].t === q.t && (q.t !== 'box' || (k === 'tall') === (q.s[1] > q.s[0])))]?.name || q.t}</b> on the ${BONE_NAMES[q.b].toLowerCase()}</div>
       <div class="ce-gizmo"><button data-gm="translate" class="${gizmo.mode === 'translate' ? 'on' : ''}">✥ Move</button><button data-gm="rotate" class="${gizmo.mode === 'rotate' ? 'on' : ''}">⟳ Turn</button><button data-gm="scale" class="${gizmo.mode === 'scale' ? 'on' : ''}">⤢ Stretch</button><button class="ce-del">🗑 Delete</button></div>` : '';
     $$('[data-gm]').forEach(b => b.onclick = () => { gizmo.setMode(b.dataset.gm); syncUi(); });
@@ -169,7 +196,7 @@ export function openBuilder(host, start, onSave, opts = {}) {
     $('.ce-hint').textContent = armed ? `Click on your character to stick on a ${keyInfo(armed).name.toLowerCase()} (click it again to stop)`
       : q ? 'Drag the handles to move, turn or stretch it · Delete key removes it · click empty space to let go'
       : parts.length ? 'Drag a shape onto your character · click a shape on it to pick it · drag the background to turn the view'
-      : 'Drag body parts onto the skeleton: a head, a chest, upper arms, forearms, hands, thighs, shins, feet... then shape them';
+      : 'Pick an example, or pick a head, torso, arms, legs... on the left (Quick build). Custom shapes lets you add anything else';
   }
   const setting = (k, v) => {
     if (k === 'mirror') { set.mirror = v; return; }
@@ -195,6 +222,36 @@ export function openBuilder(host, start, onSave, opts = {}) {
     sel = -1; rebuild(); syncUi();
   }
   $('.ce-clear').onclick = () => { if (!parts.length || !confirm('Remove every shape and go back to the bare skeleton?')) return; snapshot(); parts = []; twins.clear(); sel = -1; rebuild(); syncUi(); };
+  // ---- the quick builder: examples, the body and accent colors, builds, and a choice for each slot
+  const kitCol = { b: (parts.find(q => q.o === 'b') || {}).c || '#151515', a: (parts.find(q => q.o === 'a') || {}).c || '#ff6d00' };
+  const pairUp = list => { for (let i = 0; i < list.length; i++) { const a = list[i], b = list[i + 1]; if (b && /L$/.test(a.b) && b.b === a.b.replace(/L$/, 'R')) { twins.set(a._id, b._id); twins.set(b._id, a._id); i++; } } };
+  function addSlot(slot, opt) { // (swap what's in a slot for another option)
+    const gone = parts.filter(q => q.g && q.g.split('.')[0] === slot);
+    for (const q of gone) twins.delete(q._id);
+    parts = parts.filter(q => !gone.includes(q));
+    const add = slotParts(slot, opt, kitCol.b, kitCol.a).map(q => ({ ...q, _id: nextId++ }));
+    parts.push(...add); pairUp(add);
+    if (parts.length > Sh.FIGHTER_PARTS.max) parts.length = Sh.FIGHTER_PARTS.max;
+  }
+  const hideBones = () => { showBones = false; $('.ce-bones').textContent = 'Skeleton: hidden'; for (const g of guides) g.visible = false; };
+  $$('[data-slot]').forEach(b => b.onclick = () => { snapshot(); sel = -1; addSlot(b.dataset.slot, b.dataset.opt); hideBones(); rebuild(); syncUi(); });
+  $$('[data-ex]').forEach(b => b.onclick = () => {
+    const ex = EXAMPLES.find(e => e.id === b.dataset.ex);
+    if (parts.length && !confirm(`Start from ${ex.name}? (Undo brings back what you had)`)) return;
+    snapshot(); parts = []; twins.clear(); sel = -1;
+    kitCol.b = ex.body; kitCol.a = ex.accent;
+    for (const [s, o] of Object.entries(ex.slots)) addSlot(s, o);
+    prop = { ...BUILDS[ex.build] }; setProportions(bones, prop); look.style = ex.style; look.line = ex.line; special = ex.special;
+    hideBones(); rebuild(); syncUi(); playPreview('walk');
+  });
+  const setRole = (r, c) => { kitCol[r] = c; for (const q of parts) if (q.o === r) q.c = c; rebuildSoon(); syncUi(); };
+  $$('[data-kcol]').forEach(b => b.onclick = () => { snapshot(); setRole(b.dataset.kcol, b.dataset.c); });
+  $$('[data-kany]').forEach(i => { i.addEventListener('pointerdown', () => snapshot()); i.oninput = () => setRole(i.dataset.kany, i.value.toLowerCase()); });
+  $$('[data-build]').forEach(b => b.onclick = () => { snapshot(); prop = { ...BUILDS[b.dataset.build] }; stopPreview(); setProportions(bones, prop); rebuild(); syncUi(); });
+  // the look
+  $$('[data-look]').forEach(b => b.onclick = () => { look.style = b.dataset.look; rebuild(); syncUi(); });
+  $('.ce-line-on').onchange = e => { look.line = e.target.checked ? $('.ce-line').value : null; rebuild(); };
+  $('.ce-line').oninput = e => { $('.ce-line-on').checked = true; look.line = e.target.value; rebuildSoon(); };
   // proportions: longer or shorter arms, legs and body (what's on them stretches with them)
   for (const inp of $$('[data-prop]')) {
     inp.addEventListener('pointerdown', () => snapshot());
@@ -238,7 +295,11 @@ export function openBuilder(host, start, onSave, opts = {}) {
       const lp = bone.worldToLocal(hit.point.clone()); lp.x = 0; lp.z = 0;
       return { centre: bone.localToWorld(lp), qWorld: bone.getWorldQuaternion(new THREE.Quaternion()), d };
     }
-    const sink = d.t === 'horn' ? -h * 0.9 : d.t === 'eye' ? h * 0.35 : d.t === 'curly' || d.t === 'longhair' ? h * 0.6 : h * 0.45;
+    if (d.t === 'coat') { // (a coat always hangs from the hips, whatever you drop it on)
+      const bone = onBone('hips'); root.updateMatrixWorld(true);
+      return { centre: bone.localToWorld(new THREE.Vector3(0, 0.07 - h, 0)), qWorld: bone.getWorldQuaternion(new THREE.Quaternion()), d, bone: 'hips' };
+    }
+    const sink = d.t === 'horn' ? -h * 0.9 : d.t === 'blade' || d.t === 'spike' ? -h * 0.35 : d.t === 'spear' ? 0 : d.t === 'eye' ? h * 0.35 : d.t === 'curly' || d.t === 'longhair' ? h * 0.6 : h * 0.45;
     const centre = hit.point.clone().addScaledVector(hit.normal, -sink);
     const qWorld = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), hit.normal);
     return { centre, qWorld, d };
@@ -277,14 +338,14 @@ export function openBuilder(host, start, onSave, opts = {}) {
   }
   function addAt(keyName, hit) {
     if (keyName.startsWith('part:')) return addPart(keyName.slice(5), hit);
-    const { centre, qWorld, d } = placement(keyName, hit), bone = onBone(hit.bone);
+    const pl = placement(keyName, hit), { centre, qWorld, d } = pl, hb = pl.bone || hit.bone, bone = onBone(hb);
     root.updateMatrixWorld(true);
     const p = bone.worldToLocal(centre.clone()), qb = bone.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(qWorld);
     const e = new THREE.Euler().setFromQuaternion(qb);
     snapshot();
-    const q = { _id: nextId++, b: hit.bone, t: d.t, p: p.toArray().map(v => +v.toFixed(3)), r: [e.x, e.y, e.z].map(v => +v.toFixed(3)), s: [...d.s], u: set.u, c: set.c, k: set.k, m: SEPARATE.has(d.t) ? 0 : set.m };
+    const q = { _id: nextId++, b: hb, t: d.t, p: p.toArray().map(v => +v.toFixed(3)), r: [e.x, e.y, e.z].map(v => +v.toFixed(3)), s: [...d.s], u: set.u, c: set.c, k: set.k, m: SEPARATE.has(d.t) ? 0 : set.m };
     parts.push(q);
-    const middle = Math.abs(root.worldToLocal(centre.clone()).z) < 0.03 && !MIRROR_BONE[hit.bone]; // (on the middle line: no twin needed)
+    const middle = Math.abs(root.worldToLocal(centre.clone()).z) < 0.03 && !MIRROR_BONE[hb]; // (on the middle line: no twin needed)
     if (set.mirror && !middle && parts.length < Sh.FIGHTER_PARTS.max) {
       const tw = { ...mirrored(q), _id: nextId++ };
       parts.push(tw); twins.set(q._id, tw._id); twins.set(tw._id, q._id);
@@ -363,7 +424,7 @@ export function openBuilder(host, start, onSave, opts = {}) {
     armed = null; sel = -1; stopPreview(); showGhost(null); orbit.enabled = false;
     practice = true; placeProxy();
     $('.ce').classList.add('practicing');
-    practice = createPractice(canvas, renderer, Sh.cleanFighter({ special, parts: clean(), prop }), $('.ce-view'), stopPractice);
+    practice = createPractice(canvas, renderer, Sh.cleanFighter({ special, parts: clean(), prop, ...look }), $('.ce-view'), stopPractice);
   }
   function stopPractice() {
     if (!practice) return;
@@ -405,7 +466,7 @@ export function openBuilder(host, start, onSave, opts = {}) {
   const close = () => { if (practice) practice.dispose(); cancelAnimationFrame(raf); removeEventListener('pointermove', onMove); removeEventListener('pointerup', onUp); removeEventListener('keydown', onKey); gizmo.dispose(); orbit.dispose(); renderer.dispose(); host.innerHTML = ''; host.classList.add('hidden'); };
   $('.ce-save').onclick = () => {
     if (!parts.length && !confirm('Your fighter is just a skeleton. Fight like that?')) return;
-    close(); onSave(Sh.cleanFighter({ special, parts: clean(), prop }));
+    close(); onSave(Sh.cleanFighter({ special, parts: clean(), prop, ...look }));
   };
   $('.ce-cancel').onclick = close;
   host.classList.remove('hidden');
