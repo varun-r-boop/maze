@@ -354,15 +354,23 @@ export function createView3D(canvas) {
       camera.lookAt(vx + Math.cos(view.a) * Math.cos(f.pitch), eye + vh + Math.sin(f.pitch), vz + Math.sin(view.a) * Math.cos(f.pitch));
     } else {
       back = Math.max(0.35, Math.min(1.9, f.backRoom / TILE - 0.25));
+      const fov = f.fightCam || f.specCam || f.koCam ? 55 : 72; // (fights: a narrower lens, like Try it out)
+      if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
       if (f.koCam) { // a knock-out: the camera circles slowly round the two fighters, low, like a replay
         const a = t * 0.45, cx = f.koCam.x / TILE, cz = f.koCam.y / TILE;
         camera.position.set(cx + Math.cos(a) * 3.2, 1.1, cz + Math.sin(a) * 3.2); camera.lookAt(cx, 0.55, cz); back = 3;
-      } else if (f.fightCam) { // fighting: further back and higher, looking down past you at your opponent
+      } else if (f.specCam) { // watching a fight: side-on to the two fighters, far enough back to frame them both
+        const a = f.specCam.a, b = f.specCam.b, mx = (a.x + b.x) / 2 / TILE, mz = (a.y + b.y) / 2 / TILE;
+        const dx = (b.x - a.x) / TILE, dz = (b.y - a.y) / TILE, d = Math.hypot(dx, dz) || 1, dist = Math.max(4, d * 1.3 + 2.5);
+        const tx = mx - dz / d * dist, tz = mz + dx / d * dist; // (the side the camera was already on, so it doesn't flip over)
+        S.specPos = S.specPos || { x: tx, z: tz }; S.specPos.x += (tx - S.specPos.x) * 0.06; S.specPos.z += (tz - S.specPos.z) * 0.06;
+        camera.position.set(S.specPos.x, 1.9, S.specPos.z); camera.lookAt(mx, 0.7, mz); back = 3;
+      } else if (f.fightCam) { // fighting: just behind and to one side of you, looking past your shoulder at your opponent (as in Try it out)
         S.camZoom += ((f.camZoom || 0) - S.camZoom) * 0.08; // (charging a beam: the camera pushes in low and close, anime style)
-        const z = S.camZoom, sh = (f.shake || 0) * 0.35, jx = (Math.random() - 0.5) * sh, jy = (Math.random() - 0.5) * sh;
+        const z = S.camZoom, sh = (f.shake || 0) * 0.35, jx = (Math.random() - 0.5) * sh, jy = (Math.random() - 0.5) * sh, side = 0.9 * (1 - 0.4 * z);
         back = 2.4 - 0.9 * z;
-        camera.position.set(vx - dir.x * back + jx, 1.75 - 0.8 * z + vh + jy, vz - dir.z * back + jx);
-        camera.lookAt(vx + dir.x * 1.6, 0.45 + 0.35 * z + vh, vz + dir.z * 1.6);
+        camera.position.set(vx - dir.x * back - dir.z * side + jx, 1.6 - 0.75 * z + vh * 0.7 + jy, vz - dir.z * back + dir.x * side + jx);
+        camera.lookAt(vx + dir.x * 1.2 + dir.z * 0.2, 0.55 + 0.3 * z + vh * 0.8, vz + dir.z * 1.2 - dir.x * 0.2);
       } else {
         // with a wall right behind you the camera rises a little to look over your head
         camera.position.set(vx - dir.x * back, 1.05 + (1.9 - back) * 0.17 + vh, vz - dir.z * back);

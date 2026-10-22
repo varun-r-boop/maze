@@ -745,7 +745,7 @@
     const benches = []; // (none: it's a plain room)
     const spawns = [];
     for (let x = 8; x <= 32 && spawns.length < 12; x += 4) spawns.push([x, 2]), spawns.push([x, 28]);
-    const fighters = [[15, 15], [25, 15]];
+    const fighters = [[18, 15], [22, 15]]; // (close enough to see each other well from the start, as in Try it out)
     // the stands must all join up, and so must the ring
     for (const [sx, sy, test] of [[spawns[0][0], spawns[0][1], (x, y) => !inRing(x, y)], [fighters[0][0], fighters[0][1], inRing]]) {
       const d = S.bfs(sx, sy, (x, y) => g[y][x] === 0).d;

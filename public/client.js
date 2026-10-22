@@ -57,8 +57,9 @@ function load3D() {
   }).catch(e => { console.error(e); v3dError = '3D view failed to load. Using top-down.'; setView('top'); });
   return v3dLoading;
 }
-function setView(mode) {
-  viewMode = mode; store.set('kb-view', mode); pitch = 0;
+let viewBeforeFight = null; // (arena fights are always in 3D: the view you'd picked, to put back afterwards)
+function setView(mode, keep = true) {
+  viewMode = mode; if (keep) store.set('kb-view', mode); pitch = 0;
   if (mode !== 'top') load3D();
   else if (document.pointerLockElement) document.exitPointerLock();
   cvs.classList.toggle('mode3d', mode !== 'top');
@@ -126,6 +127,8 @@ function onMsg(m) {
       else if (ui === 'ended') renderEnd();
       break;
     case 'start':
+      if (m.mode === 'fight' && viewMode !== 'tpp') { viewBeforeFight = viewBeforeFight || viewMode; setView('tpp', false); } // (fights: always the 3D fight camera)
+      else if (m.mode !== 'fight' && viewBeforeFight) { setView(viewBeforeFight, false); viewBeforeFight = null; }
       initGame(m); ui = 'play'; overlay.classList.add('hidden'); exploreExit.hidden = !G.explore;
       break;
     case 's': if (G) applySnapshot(m); break;
@@ -210,6 +213,7 @@ function renderHome() {
 }
 
 function renderLobby() {
+  if (viewBeforeFight && (!G || G.mode !== 'fight')) { setView(viewBeforeFight, false); viewBeforeFight = null; } // (back from a fight: your own view again)
   overlay.classList.remove('hidden');
   const isHost = room.host === myId, solo = room.players.length === 1, enough = solo || room.players.length >= MIN_PLAYERS, taggers = Sh.taggerCount(room.players.length);
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
@@ -410,7 +414,7 @@ addEventListener('keydown', e => {
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') setBlock(true);
   }
   if (e.code === 'KeyL' && !e.repeat && G && G.explore && ui === 'play') leaveExplore();
-  if (e.code === 'KeyV' && !e.repeat && G && ui === 'play') {
+  if (e.code === 'KeyV' && !e.repeat && G && ui === 'play' && G.mode !== 'fight') {
     const i = VIEWS.findIndex(v => v[0] === viewMode);
     setView(VIEWS[(i + 1) % VIEWS.length][0]);
   }
@@ -1138,6 +1142,7 @@ function draw3D(t) {
   }
   v3d.render({
     G, view, t, mode: viewMode, players, noises: G.noises, beams: G.mode === 'fight' ? G.beams.map(b => ({ ...b, age: b.t + (performance.now() - G.beamsAt) / 1000, len: FT[b.k] ? FT[b.k].len : 0, life: FT[b.k] ? FT[b.k].beam : 0 })) : null, fightCam: G.mode === 'fight' && inMatch(myId), sparks: G.sparks,
+    specCam: G.mode === 'fight' && G.fm && !inMatch(myId) && G.fp !== 'ko' ? (() => { const a = G.players.get(G.fm.a), b = G.players.get(G.fm.b); return a && b ? { a: posOf(G.fm.a, a), b: posOf(G.fm.b, b) } : null; })() : null, // (watching: a side-on view of the fight)
     koCam: G.mode === 'fight' && G.fm && G.fp === 'ko' ? (() => { const a = G.players.get(G.fm.a), b = G.players.get(G.fm.b); return a && b ? { x: (posOf(G.fm.a, a).x + posOf(G.fm.b, b).x) / 2, y: (posOf(G.fm.a, a).y + posOf(G.fm.b, b).y) / 2 } : null; })() : null, hitStop: G.hitStop, shake: G.shake || 0, // (a knock-out: the camera circles the fighters)
     camZoom: (() => { const me = G.mode === 'fight' && inMatch(myId) && poseOf(myId, G.players.get(myId)); return me && FT[me.k] && FT[me.k].beam ? 1 : 0; })(),  excite: G.mode === 'fight' ? Math.min(1, G.fx.length * 0.5) : 0, // (push in close while you charge and fire a beam)
     clay: G.mode === 'clay' ? [...G.objs.values()].map(o => ({ ...o, show: o.x != null && (G.phase === 'hunt' || o.id === myId), fill: lumpColor((G.players.get(o.id) || { slot: 0 }).slot) })) : null,
