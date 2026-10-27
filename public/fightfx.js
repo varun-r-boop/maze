@@ -29,9 +29,9 @@ function textures() {
   });
 }
 // the burst's color for each kind of hit (the slashes are red for everything but the beams)
-const COL = { punch: '#ffc233', kick: '#ff9a1a', kamehameha: '#33b8ff', finalflash: '#ffe14d', block: '#7fc8ff', rush: '#ffc233', rising: '#ff8a1a', spin: '#ff7a1a', upper: '#ffa21a', divekick: '#ff9a1a', airjab: '#ffc233', airspike: '#ff6a1a', tornado: '#ff8a1a' };
-const SLASH = { kamehameha: '#1e88ff', finalflash: '#ffb300', block: '#5aa8ff' };
-const SIZE = { punch: 0.6, kick: 1.0, kamehameha: 1.5, finalflash: 1.8, block: 0.5, rush: 0.55, rising: 1.1, spin: 1.25, upper: 1.05, divekick: 1.1, airjab: 0.6, airspike: 1.5, tornado: 1.0 };
+const COL = { punch: '#ffc233', kick: '#ff9a1a', kamehameha: '#33b8ff', finalflash: '#ffe14d', block: '#7fc8ff', rush: '#ffc233', rising: '#ff8a1a', spin: '#ff7a1a', upper: '#ffa21a', divekick: '#ff9a1a', airjab: '#ffc233', airspike: '#ff6a1a', tornado: '#ff8a1a', barrage: '#ffb020', slam: '#b388ff', warp: '#e040fb' };
+const SLASH = { kamehameha: '#1e88ff', finalflash: '#ffb300', block: '#5aa8ff', slam: '#7c4dff', warp: '#aa00ff' };
+const SIZE = { punch: 0.6, kick: 1.0, kamehameha: 1.5, finalflash: 1.8, block: 0.5, rush: 0.55, rising: 1.1, spin: 1.25, upper: 1.05, divekick: 1.1, airjab: 0.6, airspike: 1.5, tornado: 1.0, barrage: 0.6, slam: 2.2, warp: 1.4 };
 
 export function createFightFx(scene) {
   textures();

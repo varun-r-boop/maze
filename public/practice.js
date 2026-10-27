@@ -40,7 +40,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
       <div><span>TRAINING DUMMY</span><div class="pr-bar pr-hp"><i></i></div></div>
       <div><span>YOUR SPECIAL (${Sh.SPECIAL_NAMES[fighter.special]})</span><div class="pr-bar pr-mt"><i></i></div></div>
     </div>
-    <p class="pr-help">${isTouch ? 'Drag to move · buttons to fight' : 'W A S D move · R or double-tap: run · J/click: jab · K/right-click: hook kick · Shift: block · C: duck · F: special · Space: jump · Combos: JJJ rush · JJK rising kick · KK spin kick · KJ uppercut · in the air: J air jab · JK meteor smash · K dive kick · KK tornado'}</p>
+    <p class="pr-help">${isTouch ? 'Drag left/right to move · buttons to fight' : 'A/D or ←/→ move · R or double-tap: run · W/↑/Space: jump · S/↓: duck · J/click: jab · K/right-click: hook kick · Shift: block · F: special · Combos: JJJ rush · JJK rising kick · KK spin kick · KJ uppercut · in the air: J air jab · JK meteor smash · K dive kick · KK tornado'}</p>
     <button class="pr-exit">◀ Back to editor</button>
     ${isTouch ? `<div class="pr-pad">${['punch', 'kick', 'block', 'dodge', 'special', 'jump'].map(k => `<button data-pr="${k}">${k.toUpperCase()}</button>`).join('')}</div>` : ''}`;
   host.appendChild(ui);
@@ -61,6 +61,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
     if (k === 'special') {
       if (S.meter < 100) { pop('Special not ready yet', '#8a8f98'); return; }
       S.meter = 0; mv = fighter.special;
+      if (!FT[mv].beam) letterbox(ui, (FT[mv].wind + 0.35) * 1000 + 200);
     }
     if (k === 'punch' || k === 'kick') { mv = Sh.fightNextMove(S.hist || (S.hist = []), k, now / 1000, S.jumpT >= 0); if (FT.MOVE_NAMES[mv]) pop(FT.MOVE_NAMES[mv].toUpperCase() + '!', '#2979ff', true); } // (a combo move?)
     const spec = FT[mv];
@@ -74,7 +75,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
     if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) { // (double-tap a direction to run)
       const t = performance.now(); if (S.lastTap && S.lastTap.code === e.code && t - S.lastTap.t < 300) S.runKey = e.code; S.lastTap = { code: e.code, t };
     }
-    const k = { KeyJ: 'punch', KeyK: 'kick', KeyC: 'dodge', KeyF: 'special', Space: 'jump' }[e.code];
+    const k = { KeyJ: 'punch', KeyK: 'kick', KeyC: 'dodge', KeyS: 'dodge', ArrowDown: 'dodge', KeyF: 'special', Space: 'jump', KeyW: 'jump', ArrowUp: 'jump' }[e.code];
     if (k) { e.preventDefault(); doMove(k); }
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') S.block = true;
     if (e.code === 'Escape') onExit();
@@ -100,7 +101,7 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
     if (now < D.koUntil) return;
     const cb = Sh.fightCombo(S, D, kind, now / 1000), dmg = Math.round(spec.dmg * cb.mult); // (combos, launches and juggles: the same rules as a real fight)
     D.hp = Math.max(0, D.hp - dmg); S.meter = Math.min(100, S.meter + dmg * FT.METER_DEAL);
-    pop(`${{ punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH', rush: 'RUSH', rising: 'RISE', spin: 'SPIN', upper: 'UPPER', divekick: 'DIVE', airjab: 'POW', airspike: 'SMASH', tornado: 'SPIN' }[kind]} -${dmg}`, kind === 'punch' ? '#e0a400' : '#ff7a1a', kind !== 'punch');
+    pop(`${Sh.HIT_WORDS[kind]} -${dmg}`, kind === 'punch' ? '#e0a400' : '#ff7a1a', kind !== 'punch');
     if (cb.launch) pop('LAUNCH!', '#ff1744', true);
     if (cb.n >= 2) { comboEl.innerHTML = `<b>${cb.n}</b> HITS`; comboEl.classList.remove('show'); void comboEl.offsetWidth; comboEl.classList.add('show'); comboAt = now; }
     D.stunUntil = now + (spec.stun || 0.15) * 1000; D.hitAt = now; D.hitK = kind; D.hitSide = S.act && S.act.side; // (it reacts to the hit)
@@ -121,24 +122,21 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
     const tx = D.x - S.x, tz = D.z - S.z, dist = Math.hypot(tx, tz) || 1;
     S.a = Math.atan2(tz, tx);
     const c = Math.cos(S.a), s = Math.sin(S.a);
-    // moving: W/S toward or away from the dummy, A/D round it (or drag on a phone)
-    let fwd = 0, side = 0;
-    if (keys.has('KeyW') || keys.has('ArrowUp')) fwd++; if (keys.has('KeyS') || keys.has('ArrowDown')) fwd--;
-    if (keys.has('KeyD') || keys.has('ArrowRight')) side++; if (keys.has('KeyA') || keys.has('ArrowLeft')) side--;
-    if (drag) { if (Math.abs(drag.dy) > 12) fwd = Math.max(-1, Math.min(1, -drag.dy / 50)); if (Math.abs(drag.dx) > 12) side = Math.max(-1, Math.min(1, drag.dx / 50)); }
-    let mx = c * fwd - s * side, mz = s * fwd + c * side;
+    // moving: side-on, like a real fight: A/D (or drag) left and right along the line, nothing else
+    let mx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0), mz = 0;
+    if (drag && Math.abs(drag.dx) > 12) mx = Math.max(-1, Math.min(1, drag.dx / 50));
     const moving = Math.hypot(mx, mz) > 0.01;
     S.running = !S.block && moving && (keys.has('KeyR') || (S.runKey && keys.has(S.runKey)) || (drag && Math.hypot(drag.dx, drag.dy) > 90));
     let speed = (S.block ? FT.BLOCK_SPEED : S.running ? FT.RUN : 1) * Sh.C.PLAYER_SPEED * U;
     if (now < S.dodgeUntil) { if (!mx && !mz) { mx = -c; mz = -s; } speed = FT.DODGE.speed * U; }
+    if (S.act && (FT[S.act.k].beam || FT[S.act.k].root)) speed = 0; // (rooted while charging and firing a beam, and for the close-up specials that say so)
     if (S.act && FT[S.act.k].lunge && now - S.act.t0 < FT.LUNGE_T * 1000) { mx = c; mz = s; speed = FT[S.act.k].lunge / FT.LUNGE_T * U; } // (a combo move darts in)
-    if (S.act && FT[S.act.k].beam) speed = 0; // (rooted while charging and firing a beam)
     const ml = Math.hypot(mx, mz);
     if (ml > 0.01) { S.x += mx / ml * speed * dt; S.z += mz / ml * speed * dt; S.walk += dt * (S.running ? 17 : 12); } else S.walk = 0;
     // don't walk through the dummy, or out of the room
     const dd = Math.hypot(S.x - D.x, S.z - D.z);
     if (dd < 0.7) { S.x = D.x + (S.x - D.x) / (dd || 1) * 0.7; S.z = D.z + (S.z - D.z) / (dd || 1) * 0.7; }
-    S.x = Math.max(-ROOM + 0.5, Math.min(ROOM - 0.5, S.x)); S.z = Math.max(-ROOM + 0.5, Math.min(ROOM - 0.5, S.z));
+    S.x = Math.max(-ROOM + 0.5, Math.min(ROOM - 0.5, S.x)); S.z = 0; D.z = 0; // (side-on: everyone stays on the line)
     // your move lands after its wind-up
     if (S.act) {
       const spec = FT[S.act.k], el = (now - S.act.t0) / 1000;
@@ -147,7 +145,11 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
         while (S.act.n < spec.hits && el >= spec.wind + S.act.n * spec.every) { S.act.n++; if (dist <= spec.range * U) hitDummy(S.act.k, tx / dist, tz / dist); }
       } else if (!S.act.done && el >= spec.wind) {
         S.act.done = true;
-        if (spec.range && dist <= spec.range * U) hitDummy(S.act.k, tx / dist, tz / dist); // (you always face the dummy)
+        if (S.act.k === 'slam') { ffx.hit(S.x, 0.1, S.z, 'slam'); impactFrame(ui, 90); shake = 0.45; } // (the shockwave, hit or miss)
+        if (spec.range && dist <= spec.range * U) {
+          if (spec.warp) { S.x = D.x + tx / dist * 0.6; S.z = D.z + tz / dist * 0.6; } // (reappear just behind it)
+          hitDummy(S.act.k, tx / dist, tz / dist); // (you always face the dummy)
+        }
         else if (spec.beam) { letterbox(ui, spec.beam * 1000 + 300); beams.push({ x: S.x + c * 0.4, z: S.z + s * 0.4, dx: c, dz: s, a: S.a, k: S.act.k, t0: now, hit: false }); speedLines(ui, spec.beam * 1000 + 200, S.act.k === 'finalflash' ? '#fff3a0' : '#bfefff'); }
       }
       if (now - S.act.t0 > S.act.dur) S.act = null;
@@ -178,11 +180,11 @@ export function createPractice(canvas, renderer, fighter, host, onExit) {
     const dPose = now < D.koUntil && !D.air ? { k: 'ko', p: 1 - (D.koUntil - now) / 1800 } : D.air ? { k: 'juggle', p: 0 } : guE < FT.JUGGLE.getup ? { k: 'getup', p: guE / FT.JUGGLE.getup } : hitE < hitD ? { k: 'hit', p: hitE / hitD, kind: D.hitK, side: D.hitSide } : now < D.stunUntil ? { k: 'stun', p: (now % 1000) / 1000 } : null;
     poseFighter(dummy, dPose, 0);
     dummy.position.set(D.x, D.air ? D.air.y : 0, D.z); dummy.rotation.y = -Math.atan2(S.z - D.z, S.x - D.x);
-    // (over your shoulder, so you can see the dummy past yourself)
+    // (side-on, like a 2D fighting game: centred between you two, backing off to keep you both in view)
     zoom += ((S.act && FT[S.act.k].beam ? 1 : 0) - zoom) * Math.min(1, dt * 5); shake = Math.max(0, shake - dt);
-    const jx = (Math.random() - 0.5) * shake * 0.35, jy = (Math.random() - 0.5) * shake * 0.35, bk = 2.4 - 0.9 * zoom; // (a beam: push in low and close)
-    camera.position.set(S.x - c * bk - s * 0.9 * (1 - 0.4 * zoom) + jx, 1.6 - 0.75 * zoom + jy + me.position.y * 0.7, S.z - s * bk + c * 0.9 * (1 - 0.4 * zoom) + jx);
-    camera.lookAt(S.x + c * 1.2 + s * 0.2, 0.55 + 0.3 * zoom + me.position.y * 0.8, S.z + s * 1.2 - c * 0.2); // (following you up into a jump)
+    const jx = (Math.random() - 0.5) * shake * 0.35, jy = (Math.random() - 0.5) * shake * 0.35, mid = (S.x + D.x) / 2, back = Math.max(4.2, Math.abs(S.x - D.x) * 1.1 + 2.2) - 0.8 * zoom; // (a beam: push in a little)
+    camera.position.set(mid + jx, 1.05 + jy, back);
+    camera.lookAt(mid, 0.75, 0);
     ffx.update();
     renderer.render(scene, camera);
     hpBar.style.width = `${D.hp / FT.HP * 100}%`; hpBar.style.background = D.hp > 50 ? '#43a047' : D.hp > 25 ? '#fdd835' : '#e53935';

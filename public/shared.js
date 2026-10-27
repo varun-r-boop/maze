@@ -60,6 +60,7 @@
     punch: { dmg: 7, range: 50, arc: 1.0, wind: 0.07, cd: 0.32, stun: 0.34 },         // range px, arc: half-angle (radians); the stun lasts until your next jab lands (jabs chain)
     kick: { dmg: 14, range: 60, arc: 0.85, wind: 0.22, cd: 0.75, stun: 0.3, kb: 260 }, // kb: knock-back speed (px/s)
     RUN: 1.75, // running (hold R, or double-tap a direction): this much faster than walking
+    MAX_GAP: 240, // the farthest apart (px) the two fighters can get: backing off stops there, as in a 2D fighting game (and the camera never zooms out further)
     BLOCK: 0.25, BLOCK_SPEED: 0.45,  // blocking: share of the damage you still take, and how fast you can move
     DODGE: { t: 0.28, speed: 430, cd: 1.0 }, // a roll: nothing hits you while it lasts
     METER_DEAL: 1.5, METER_TAKE: 1.0, // the special meter (0-100) fills by this much per point of damage dealt / taken
@@ -67,6 +68,12 @@
     // for `beam` seconds, `len` px long and `w` px wide. Jump over it to dodge it.
     kamehameha: { dmg: 24, wind: 0.75, beam: 0.5, len: 340, w: 22, cd: 1.5, stun: 0.5, kb: 380 },
     finalflash: { dmg: 30, wind: 1.0, beam: 0.6, len: 400, w: 34, cd: 1.85, stun: 0.6, kb: 460 },
+    // the close-up specials. root: you stand still while it charges. barrage: dart in and land six quick punches (the
+    // sixth shoves them off: COMBO.breakAt). slam: leap and smash the floor, launching anyone near you, all round.
+    // warp: vanish, then reappear behind them (if they're within `range`) with a kick they can't block (only dodge).
+    barrage: { dmg: 5, hits: 6, every: 0.07, wind: 0.18, cd: 0.95, range: 62, arc: 1.0, stun: 0.34, lunge: 110 },
+    slam: { dmg: 20, wind: 0.55, cd: 1.15, range: 110, arc: 3.2, stun: 0.6, launch: 5.0, root: true },
+    warp: { dmg: 22, wind: 0.32, cd: 0.85, range: 320, arc: 3.2, stun: 0.5, kb: 380, warp: true, root: true },
     // combo moves: a sequence of jabs and kicks turns into a special attack (see COMBO_MOVES). hits: how many times it
     // hits (every `every` s); launch: how hard it sends them up into the air; lunge: how far (px) you dart in as it starts
     // (so it reaches someone a kick has just shoved back)
@@ -93,8 +100,8 @@
     // While they're up, every hit pops them back up (less each time, `decay`; at most `max` times). Then they fall,
     // land and get up (`getup` seconds, nothing hits them). Heights in 3D units, `g` the gravity.
     JUGGLE: { bounce: 3.4, g: 11, launch: 5.4, pop: { punch: 2.4, kick: 3.8, kamehameha: 4.6, finalflash: 5.2 }, decay: 0.8, max: 6, getup: 0.55 },
-    HIT_T: { punch: 0.3, kick: 0.5, kamehameha: 0.8, finalflash: 0.9, block: 0.25, rush: 0.25, rising: 0.5, spin: 0.6, upper: 0.4, divekick: 0.5, airjab: 0.3, airspike: 0.5, tornado: 0.5 }, // seconds each hit reaction plays (block: a hit on your guard)
-    HIT_STOP: { punch: 0.06, kick: 0.12, kamehameha: 0.2, finalflash: 0.26, block: 0.05, rush: 0.04, rising: 0.12, spin: 0.15, upper: 0.11, divekick: 0.12, airjab: 0.05, airspike: 0.18, tornado: 0.08 }, // hit-stop: both fighters freeze for this long as a hit lands
+    HIT_T: { punch: 0.3, kick: 0.5, kamehameha: 0.8, finalflash: 0.9, block: 0.25, rush: 0.25, rising: 0.5, spin: 0.6, upper: 0.4, divekick: 0.5, airjab: 0.3, airspike: 0.5, tornado: 0.5, barrage: 0.25, slam: 0.7, warp: 0.6 }, // seconds each hit reaction plays (block: a hit on your guard)
+    HIT_STOP: { punch: 0.06, kick: 0.12, kamehameha: 0.2, finalflash: 0.26, block: 0.05, rush: 0.04, rising: 0.12, spin: 0.15, upper: 0.11, divekick: 0.12, airjab: 0.05, airspike: 0.18, tornado: 0.08, barrage: 0.04, slam: 0.22, warp: 0.18 }, // hit-stop: both fighters freeze for this long as a hit lands
     JUMP_T: 0.85, JUMP_H: 1.35, JUMP_PX: 46, // a fighter's jump: seconds in the air, how high (3D units, and px top-down)
   };
   // Building your own fighter: a character is a list of shapes dropped onto a skeleton. Each shape belongs to the body
@@ -108,8 +115,11 @@
     types: ['box', 'rbox', 'cylinder', 'sphere', 'cone', 'capsule', 'torus', 'curly', 'longhair', 'eye', 'horn', 'blade', 'spike', 'spear', 'coat'],
     max: 90,
   };
-  S.FIGHT_SPECIALS = ['kamehameha', 'finalflash'];
-  S.SPECIAL_NAMES = { kamehameha: 'Kamehameha', finalflash: 'Final Flash' };
+  S.FIGHT_SPECIALS = ['kamehameha', 'finalflash', 'barrage', 'slam', 'warp'];
+  S.SPECIAL_NAMES = { kamehameha: 'Kamehameha', finalflash: 'Final Flash', barrage: 'Dragon Barrage', slam: 'Shockwave Slam', warp: 'Instant Strike' };
+  // the word that pops up where each kind of hit lands
+  S.HIT_WORDS = { punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH', rush: 'RUSH', rising: 'RISE', spin: 'SPIN', upper: 'UPPER', divekick: 'DIVE', airjab: 'POW', airspike: 'SMASH', tornado: 'SPIN',
+    barrage: 'ORA', slam: 'QUAKE', warp: 'BEHIND YOU' };
   S.cleanFighter = f => {
     const P = S.FIGHTER_PARTS, num = (v, lo, hi, d) => Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d;
     const v3 = (a, lo, hi, d) => Array.isArray(a) && a.length === 3 ? a.map(v => Math.round(num(v, lo, hi, d) * 1000) / 1000) : [d, d, d];
@@ -184,6 +194,9 @@
   const rand = S.rand = n => Math.floor(Math.random() * n);
   const I = S.I = (x, y) => y * COLS + x;
   S.center = t => t * TILE + TILE / 2;
+  // arena fights are side-on (2D): the two fighters stay on one line across the ring (the row they start on), so they
+  // only move left and right (and jump)
+  S.fightLineY = A => S.center(A.fighters[0][1]);
   S.tileOf = o => ({ x: Math.floor(o.x / TILE), y: Math.floor(o.y / TILE) });
   S.dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 

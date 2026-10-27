@@ -244,7 +244,7 @@ function onPos(r, c, m) {
   const fighting = g.mode === 'fight' && g.match && (p.id === g.match.a || p.id === g.match.b);
   const pinned = fighting && (g.fphase !== 'fight' || (g.time < p.stunUntil && now0 > p.kbUntil));
   if (p.frozen || p.escaped || (p.role === 'it' && g.time < HOLD) || g.phase === 'sculpt' || pinned) { if (Math.hypot(m.x - p.x, m.y - p.y) > 2) teleport(r, p, p.x, p.y); return; }
-  const x = Number(m.x), y = Number(m.y), now = Date.now();
+  const x = Number(m.x), y = fighting ? Sh.fightLineY(g.arena) : Number(m.y), now = Date.now(); // (fighters stay on the line: side-on)
   const dt = (now - p.lastPosT) / 1000;
   let speed = PLAYER_SPEED * (p.role === 'it' ? TAGGER_SPEED : 1);
   if (fighting) p.run = !!m.r && !p.block; // (running)
@@ -255,6 +255,8 @@ function onPos(r, c, m) {
     teleport(r, p, p.x, p.y);
     return;
   }
+  const o = fighting && fighterOf(g, p.id === g.match.a ? g.match.b : g.match.a);
+  if (o && Math.abs(x - o.x) > FT.MAX_GAP + 80) { teleport(r, p, p.x, p.y); return; } // (too far from them: the client keeps within MAX_GAP; the slack is for lag)
   p.x = x; p.y = y; p.fl = fl; p.lastPosT = now;
 }
 function teleport(r, p, x, y, a) { // `a`: face this way afterwards (used by stairs)
@@ -786,6 +788,7 @@ function onFx(r, c, m) {
   }
   else if (k === 'special' && p.meter >= 100) {
     p.meter = 0; p.act = { k: p.fighter.special, t0: g.time };
+    if (FT[p.act.k].lunge) p.boostUntil = Date.now() + FT.LUNGE_T * 1000 + 150; // (a barrage darts in: allow the speed)
     broadcast(r, { t: 'special', by: p.id, kind: p.act.k });
   }
 }
@@ -813,7 +816,7 @@ function fightTick(r, dt) {
       while (a.n < spec.hits && g.time >= a.t0 + spec.wind + a.n * spec.every) { a.n++; if (inReach(p, o, spec.range, spec.arc)) landHit(r, p, o, a.k); }
     } else if (!a.done && g.time >= a.t0 + spec.wind) {
       a.done = true;
-      if (spec.range && inReach(p, o, spec.range, spec.arc)) landHit(r, p, o, a.k);
+      if (spec.range && inReach(p, o, spec.range, spec.arc)) { if (spec.warp) warpBehind(r, p, o); landHit(r, p, o, a.k); }
       else if (spec.beam) g.beams.push({ x: p.x + Math.cos(p.yaw) * 16, y: p.y + Math.sin(p.yaw) * 16, a: p.yaw, k: a.k, o: p.id, t0: g.time, hit: false }); // (fired after the charge)
     }
     if (g.time >= a.t0 + Math.max(spec.cd, spec.wind + 0.05)) p.act = null;
@@ -830,6 +833,16 @@ function fightTick(r, dt) {
     return true;
   });
   if (A.hp <= 0 || B.hp <= 0 || g.time >= g.fUntil) roundOver(r);
+}
+// an instant strike: reappear just behind them (or in front, if there's a wall there), facing them
+function warpBehind(r, p, o) {
+  const g = r.game, l = dist(p, o) || 1, ux = (o.x - p.x) / l, uy = (o.y - p.y) / l, world = Sh.world(g, o.fl);
+  for (const [cx, cy] of [[ux, uy], [-ux, -uy]]) { // (behind them on the line, or in front if there's a wall)
+    const x = o.x + cx * 30, y = o.y + cy * 30;
+    if (Sh.collides(world, x, y, PLAYER_R - 3)) continue;
+    p.yaw = Math.atan2(o.y - y, o.x - x); p.fl = o.fl;
+    return teleport(r, p, x, y);
+  }
 }
 // a launched fighter: helpless while up; lands and gets up (nothing hits them while they get up)
 function stepAir(g, p, dt) {

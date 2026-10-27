@@ -57,7 +57,7 @@ function load3D() {
   }).catch(e => { console.error(e); v3dError = '3D view failed to load. Using top-down.'; setView('top'); });
   return v3dLoading;
 }
-let viewBeforeFight = null; // (arena fights are always in 3D: the view you'd picked, to put back afterwards)
+let viewBeforeFight = null; // (arena fights are always side-on 2D: the view you'd picked, to put back afterwards)
 function setView(mode, keep = true) {
   viewMode = mode; if (keep) store.set('kb-view', mode); pitch = 0;
   if (mode !== 'top') load3D();
@@ -127,7 +127,7 @@ function onMsg(m) {
       else if (ui === 'ended') renderEnd();
       break;
     case 'start':
-      if (m.mode === 'fight' && viewMode !== 'tpp') { viewBeforeFight = viewBeforeFight || viewMode; setView('tpp', false); } // (fights: always the 3D fight camera)
+      if (m.mode === 'fight' && viewMode !== 'top') { viewBeforeFight = viewBeforeFight || viewMode; setView('top', false); } // (fights: always the side-on 2D view)
       else if (m.mode !== 'fight' && viewBeforeFight) { setView(viewBeforeFight, false); viewBeforeFight = null; }
       initGame(m); ui = 'play'; overlay.classList.add('hidden'); exploreExit.hidden = !G.explore;
       break;
@@ -152,7 +152,7 @@ function onMsg(m) {
     case 'fight': if (G) { banner('FIGHT!', '#ff5252', 1); playFight('bell'); } break;
     case 'hit': if (G) onHit(m); break;
     case 'cmove': if (G) { G.moveHud = { by: m.by, k: m.k, t0: performance.now() }; playFight('swish'); } break; // (a combo move: its name on screen)
-    case 'special': if (G) { playFight(m.kind); if (FT[m.kind]) screenFx('fx-letterbox', (FT[m.kind].wind + FT[m.kind].beam) * 1000 + 200); if (FT[m.kind]) setTimeout(() => G && G.mode === 'fight' && screenFx('fx-speed', FT[m.kind].beam * 1000 + 200, m.kind === 'finalflash' ? '#fff3a0' : '#bfefff'), FT[m.kind].wind * 1000); // (speed lines as the beam fires)
+    case 'special': if (G) { onSpecial(m);
        if (m.by !== myId) addMsg(`${(G.players.get(m.by) || { name: '?' }).name}: ${(Sh.SPECIAL_NAMES[m.kind] || '').toUpperCase()}!`, '#ffb74d', 1.5); } break;
     case 'ko': if (G) { screenFx('fx-letterbox', FT.KO_PAUSE * 1000 - 300); banner(m.ko ? 'K.O.!' : m.w ? 'TIME!' : 'DRAW', '#ffd54f', 2.2); playFight('bell'); } break;
     case 'kb': if (G) G.kb = { vx: m.vx, vy: m.vy, until: performance.now() + m.dur * 1000 }; break;
@@ -341,7 +341,7 @@ function initGame(m) {
     loadSprites().then(L => {
       if (G !== g) return;
       g.sprites = new Map([...g.players].map(([id, p]) => [id, L.fighterSprites(p.fighter, p.slot)]));
-      g.drawSprite = L.drawFighterSprite;
+      g.drawSprite = L.drawFighterSprite; g.hitGroup = L.hitGroup;
     }).catch(e => console.error(e));
   }
 }
@@ -410,7 +410,8 @@ addEventListener('keydown', e => {
   if (G && G.mode === 'fight' && !e.repeat) {
     if (e.code === 'KeyJ') fightInput('punch');
     if (e.code === 'KeyK') fightInput('kick');
-    if (e.code === 'KeyC') fightInput('dodge');
+    if (e.code === 'KeyC' || e.code === 'KeyS' || e.code === 'ArrowDown') fightInput('dodge'); // (duck)
+    if ((e.code === 'KeyW' || e.code === 'ArrowUp') && inMatch(myId)) jump();
     if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') setBlock(true);
   }
   if (e.code === 'KeyL' && !e.repeat && G && G.explore && ui === 'play') leaveExplore();
@@ -433,7 +434,7 @@ cvs.addEventListener('mousedown', e => {
   if (e.button === 0) act(); // left click: tag, or unfreeze (a punch in a fight)
   if (e.button === 2 && G && G.mode === 'fight') fightInput('kick'); // right click: a kick
   // 3D views: click to capture the mouse for looking around
-  if (viewMode !== 'top' && ui === 'play' && !document.pointerLockElement && cvs.requestPointerLock) {
+  if (viewMode !== 'top' && G && G.mode !== 'fight' && ui === 'play' && !document.pointerLockElement && cvs.requestPointerLock) {
     try { const r = cvs.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch {}
   }
 });
@@ -646,7 +647,10 @@ function update(dt) {
   // frozen runners can't move (but can still turn and look around), and taggers wait out the head start
   const stuck = meP.fz || meP.e || (G.role === 'it' && G.time < G.hold) || G.phase === 'sculpt';
   let mx, my;
-  if (viewMode === 'top') {
+  if (G.mode === 'fight' && inMatch(myId)) { // side-on: left and right only (up jumps, down ducks); you always face them
+    mx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0); my = 0;
+    if (joy && Math.abs(joy.x - joy.ox) > 12) mx = Math.max(-1, Math.min(1, (joy.x - joy.ox) / 50));
+  } else if (viewMode === 'top') {
     [mx, my] = inputVector();
     // A/D (or ←/→) turn you left/right; the headlight points the way you're walking
     if (mx) G.flip = mx < 0 ? -1 : 1;
@@ -677,6 +681,7 @@ function update(dt) {
   if ((mx || my) && !still) {
     const bx = G.me.x, by = G.me.y;
     Sh.moveCircle(Sh.world(G, G.fl), G.me, mx * speed * dt, my * speed * dt, PLAYER_R);
+    if (G.mode === 'fight' && inMatch(myId)) { G.me.y = Sh.fightLineY(G.arena); keepClose(); } // (stay on the line, and not too far from them)
     G.moving = G.me.x !== bx || G.me.y !== by;
     const fl = Sh.nextFloor(G, G.me.x, G.me.y, G.fl); // up or down a staircase
     if (fl !== G.fl) { G.fl = fl; addMsg(fl ? 'Upstairs' : 'Ground floor', '#ffe9a8', 1.5); }
@@ -1186,7 +1191,8 @@ function drawWorld(t) {
       const blink = p.imm && Math.floor(t * 10) % 2; // just unfrozen: can't be tagged for a moment
       if (up) { ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(pos.x, pos.y + 15, 11 * (1 - up / 60), 4, 0, 0, Math.PI * 2); ctx.fill(); } // their shadow stays on the floor
       const sprites = G.arena && G.sprites && G.sprites.get(id);
-      if (sprites) G.drawSprite(ctx, sprites, pos.x, pos.y - up, self ? G.flip : p.flip, self ? G.walk : p.walk, poseOf(id, p));
+      const ps = sprites && poseOf(id, p), gone = ps && ps.k === 'warp' && ps.p > 0.12 && ps.p < FT.warp.wind / FT.warp.cd; // (an instant strike: vanished)
+      if (sprites) G.drawSprite(ctx, sprites, pos.x, pos.y - up, self ? G.flip : p.flip, self ? G.walk : p.walk, ps, gone ? 0.12 : 1);
       else drawPerson(ctx, p.char, pos.x, pos.y - up, p.fz ? shade(COLORS[p.slot], 0.75) : COLORS[p.slot], self ? G.flip : p.flip, self ? G.walk : p.walk, (blink ? 0.45 : 1) * (below ? 0.7 : 1), p.slot);
       drawTagMarks(p, pos.x, pos.y - up, t);
     } });
@@ -1452,7 +1458,7 @@ function drawHud(t) {
     vg.addColorStop(0, 'rgba(160,220,255,0)'); vg.addColorStop(1, 'rgba(190,235,255,.55)');
     ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
   }
-  drawMinimap(W - COLS * MINI - 10, 50);
+  if (G.mode !== 'fight') drawMinimap(W - COLS * MINI - 10, 50);
   if (G.mode === 'clay') { actBtn.hidden = true; drawClayHud(meP, t); drawHudFooter(); return; }
   if (G.mode === 'fight') { actBtn.hidden = true; drawFightHud(meP, t); drawHudFooter(); return; }
   drawStatus(meP);
@@ -1730,8 +1736,18 @@ function screenFx(cls, ms, col) {
   if (cls === 'fx-letterbox') d.innerHTML = '<i></i><i></i>';
   document.body.appendChild(d); setTimeout(() => { d.classList.add('out'); setTimeout(() => d.remove(), 300); }, ms);
 }
+// a special starts: letterbox bars for it, speed lines as a beam fires, a shockwave where a slam lands
+function onSpecial(m) {
+  const s = FT[m.kind]; if (!s) return;
+  playFight(m.kind); screenFx('fx-letterbox', (s.wind + (s.beam || 0.35)) * 1000 + 200);
+  if (s.beam) setTimeout(() => G && G.mode === 'fight' && screenFx('fx-speed', s.beam * 1000 + 200, m.kind === 'finalflash' ? '#fff3a0' : '#bfefff'), s.wind * 1000);
+  if (m.kind === 'slam') setTimeout(() => {
+    const p = G && G.mode === 'fight' && G.players.get(m.by); if (!p) return;
+    const pos = posOf(m.by, p); G.sparks.push({ id: ++G.sparkN, x: pos.x, y: pos.y, kind: 'slam', t0: performance.now() }); screenFx('fx-impact', 90); G.shake = 0.4;
+  }, s.wind * 1000);
+}
 function onHit(m) {
-  const big = m.kind !== 'punch' && m.kind !== 'rush' && m.kind !== 'airjab';
+  const big = m.kind !== 'punch' && m.kind !== 'rush' && m.kind !== 'airjab' && m.kind !== 'barrage';
   if (!m.miss) { // a burst where it lands, a split-second freeze, and for a big clean hit an impact frame
     const kind = m.blocked ? 'block' : m.kind, now = performance.now();
     G.sparks.push({ id: ++G.sparkN, x: m.x, y: m.y, kind, t0: now });
@@ -1742,7 +1758,7 @@ function onHit(m) {
   }
   const v = G.players.get(m.to), att = G.players.get(m.by);
   if (v && !m.miss) Object.assign(v, { hitAt: performance.now(), hitK: m.blocked ? 'block' : m.kind, hitSide: m.by === myId ? G.myAct && G.myAct.side : att && att.sd }); // (they react to it)
-  G.fx.push({ x: m.x, y: m.y, t: 0.7, d: 0.7, text: m.miss ? 'MISS' : m.blocked ? 'BLOCK' : { punch: 'POW', kick: 'BAM', kamehameha: 'KAMEHAMEHA', finalflash: 'FINAL FLASH', rush: 'RUSH', rising: 'RISE', spin: 'SPIN', upper: 'UPPER', divekick: 'DIVE', airjab: 'POW', airspike: 'SMASH', tornado: 'SPIN' }[m.kind], dmg: m.miss ? 0 : m.dmg, color: m.miss ? '#b9b5d6' : m.blocked ? '#7fd4ff' : big ? '#ff8a3d' : '#ffe066', big });
+  G.fx.push({ x: m.x, y: m.y, t: 0.7, d: 0.7, text: m.miss ? 'MISS' : m.blocked ? 'BLOCK' : Sh.HIT_WORDS[m.kind], dmg: m.miss ? 0 : m.dmg, color: m.miss ? '#b9b5d6' : m.blocked ? '#7fd4ff' : big ? '#ff8a3d' : '#ffe066', big });
   playFight(m.miss ? 'swish' : m.blocked ? 'block' : big ? 'kick' : 'punch');
   if (m.to === myId && !m.miss && !m.blocked) G.shake = big ? 0.35 : 0.15;
 }
@@ -1759,6 +1775,11 @@ function fightUpdate(dt) {
   if (show) fpad.querySelector('[data-f="special"]').classList.toggle('ready', (G.players.get(myId).mt || 0) >= 100);
   if (!inMatch(myId) && G.blocking) setBlock(false);
 }
+// a fighter can't back off (or be knocked) more than FT.MAX_GAP away from the other one
+function keepClose() {
+  const o = oppOf(myId);
+  if (o && o.rx != null) G.me.x = Math.max(o.rx - FT.MAX_GAP, Math.min(o.rx + FT.MAX_GAP, G.me.x));
+}
 // how you move while fighting: always facing your opponent; pinned before the bell, after a knock-out and while
 // stunned, and while charging and firing a beam; slower while blocking; a dodge rolls you (back, if you're not steering);
 // a big hit knocks you back. (The server allows exactly this.)
@@ -1767,15 +1788,15 @@ function fightSteer(dt, mx, my, speed, stuck) {
   const meP = G.players.get(myId), o = oppOf(myId), now = performance.now();
   if (o) aim = Math.atan2(o.ry - G.me.y, o.rx - G.me.x);
   G.flip = Math.cos(aim) < 0 ? -1 : 1;
-  if (G.kb && now < G.kb.until) Sh.moveCircle(G, G.me, G.kb.vx * dt, G.kb.vy * dt, PLAYER_R);
+  if (G.kb && now < G.kb.until) { Sh.moveCircle(G, G.me, G.kb.vx * dt, G.kb.vy * dt, PLAYER_R); keepClose(); }
   if (G.fp !== 'fight' || meP.st) return { mx: 0, my: 0, speed, still: true };
   if (now < G.dodgeUntil) {
     if (!mx && !my) { mx = -Math.cos(aim); my = -Math.sin(aim); }
     const l = Math.hypot(mx, my);
     return { mx: mx / l, my: my / l, speed: FT.DODGE.speed, still: false };
   }
-  if (G.myAct && FT[G.myAct.k].beam) return { mx: 0, my: 0, speed, still: true };
   if (G.myAct && FT[G.myAct.k].lunge && now - G.myAct.t0 < FT.LUNGE_T * 1000) return { mx: Math.cos(aim), my: Math.sin(aim), speed: FT[G.myAct.k].lunge / FT.LUNGE_T, still: false }; // (a combo move darts in)
+  if (G.myAct && (FT[G.myAct.k].beam || FT[G.myAct.k].root)) return { mx: 0, my: 0, speed, still: true };
   if (o) { // don't walk through each other
     const dx = G.me.x - o.rx, dy = G.me.y - o.ry, d = Math.hypot(dx, dy);
     if (d < 30 && d > 0.1) { const push = Math.min(30 - d, 160 * dt); Sh.moveCircle(G, G.me, dx / d * push, dy / d * push, PLAYER_R); }
@@ -1827,6 +1848,9 @@ function playFight(kind) {
     tone(now, s.wind, big ? 160 : 220, big ? 700 : 900, 'sawtooth', 0.05); tone(now, s.wind, big ? 320 : 440, big ? 1400 : 1800, 'sine', 0.08);
     burst(now + s.wind, s.beam + 0.25, big ? 500 : 800, 0.4, 0.9); tone(now + s.wind, s.beam + 0.1, big ? 90 : 120, 45, 'sawtooth', 0.25);
   }
+  else if (kind === 'barrage') { const s = FT.barrage; for (let i = 0; i < s.hits; i++) burst(now + s.wind + i * s.every, 0.06, 1400 + 200 * i, 0.8, 0.4); } // (a rattle of swishes)
+  else if (kind === 'slam') { const s = FT.slam; tone(now, s.wind, 200, 700, 'sine', 0.1); tone(now + s.wind, 0.6, 90, 30, 'sine', 1); burst(now + s.wind, 0.4, 250, 0.6, 1); } // (up... and a boom)
+  else if (kind === 'warp') { tone(now, 0.12, 1800, 300, 'sine', 0.2); tone(now + FT.warp.wind, 0.1, 300, 2000, 'sine', 0.2); } // (zip out, zip in)
 }
 
 // in the world (top-down): beams, a special's energy ball as it charges, health bars over the two fighters, hit pops
@@ -1943,8 +1967,108 @@ function drawFightHud(meP, t) {
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.font = 'bold 14px system-ui'; ctx.fillStyle = COLORS[meP.slot]; ctx.fillText(meP.name, x + 14, y + 20);
   ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'right'; ctx.fillStyle = fighting ? '#ff8a80' : '#b388ff'; ctx.fillText(fighting ? 'FIGHTING' : 'WATCHING', x + w - 10, y + 20); ctx.textAlign = 'left';
   ctx.font = '12px system-ui'; ctx.fillStyle = '#e8e6f0';
-  ctx.fillText(fighting ? (isTouch ? 'Use the buttons · double-tap to jump' : 'Run: hold R (or double-tap) · Jab: J/click · Hook kick: K/right-click · Block: Shift · Duck: C · Special: F · Jump: Space · Combos: JJJ rush, JJK rising kick, KK spin kick, KJ uppercut · In the air: J air jab, JK meteor smash, K dive kick, KK tornado kick')
+  ctx.fillText(fighting ? (isTouch ? 'Drag left/right to move · use the buttons · double-tap to jump' : 'Move: A/D or ←/→ · Run: hold R (or double-tap) · Jump: W/↑/Space · Duck: S/↓ · Jab: J/click · Hook kick: K/right-click · Block: Shift · Special: F · Combos: JJJ rush, JJK rising kick, KK spin kick, KJ uppercut · In the air: J air jab, JK meteor smash, K dive kick, KK tornado kick')
     : fm ? `${nameOf(fm.a)} vs ${nameOf(fm.b)}: watch from the stands` : 'Waiting for the next fight…', x + 14, y + 44);
+}
+
+// ---------------------------------------------------------------- the side-on fight
+// Arena fights are drawn like a 2D fighting game: seen from the side, the two fighters on one line across the ring
+// (map x is across the screen; jumps and launches go up). The camera follows the pair and zooms to keep both in view.
+// The fans in the stands are dim figures in the back row.
+function drawSideFight(t) {
+  const A = G.arena, R = A.ring, fm = G.fm, now = performance.now();
+  const ids = fm ? [fm.a, fm.b].filter(id => G.players.get(id)) : [], xs = ids.map(id => posOf(id, G.players.get(id)).x);
+  const rx0 = R.x0 * TILE, rx1 = (R.x1 + 1) * TILE, span = xs.length === 2 ? Math.abs(xs[0] - xs[1]) : rx1 - rx0;
+  const want = { x: xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : (rx0 + rx1) / 2, s: Math.min(H * 0.42 / (1.75 * TILE), W * 0.62 / Math.max(span + TILE * 2, TILE * 5)) };
+  const cam = G.sideCam || (G.sideCam = { ...want }), ck = Math.min(1, (now - (cam.t || now)) / 1000 * 6); cam.t = now;
+  cam.x += (want.x - cam.x) * ck; cam.s += (want.s - cam.s) * ck;
+  const sc = cam.s, floorY = H * 0.76, shake = G.shake > 0 ? (Math.random() - 0.5) * G.shake * 18 : 0;
+  const sx = x => W / 2 + (x - cam.x) * sc + shake, up = u => u * TILE * sc; // (map px across; 3D units up)
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // the stage: a dark void, a glowing grid on the back wall (brighter in an exciting fight), a shiny floor
+  const ex = Math.min(1, G.fx.length * 0.5), bg = ctx.createLinearGradient(0, 0, 0, floorY);
+  bg.addColorStop(0, '#04040a'); bg.addColorStop(1, '#100c24'); ctx.fillStyle = bg; ctx.fillRect(0, 0, W, floorY);
+  ctx.strokeStyle = `rgba(150,130,255,${0.12 + 0.18 * ex})`; ctx.lineWidth = 1; ctx.beginPath();
+  const g = TILE * sc * 0.6, ox = ((-cam.x * sc * 0.6) % g + g) % g; // (the wall is far: it slides by slower)
+  for (let x = ox; x < W; x += g) { ctx.moveTo(x, 0); ctx.lineTo(x, floorY); }
+  for (let y = floorY; y > 0; y -= g) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  ctx.stroke();
+  const fl = ctx.createLinearGradient(0, floorY, 0, H); fl.addColorStop(0, '#16122e'); fl.addColorStop(1, '#050409'); ctx.fillStyle = fl; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.strokeStyle = `rgba(150,130,255,${0.2 + 0.2 * ex})`; ctx.beginPath(); // (the floor grid, running away from you)
+  for (let x = Math.floor((cam.x - W / sc) / TILE) * TILE; x < cam.x + W / sc; x += TILE) { const a = sx(x); ctx.moveTo(a, floorY); ctx.lineTo(W / 2 + (a - W / 2) * 2.4, H); }
+  for (let k = 1; k < 6; k++) { const y = floorY + (H - floorY) * (k / 6) ** 1.6; ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  ctx.stroke();
+  ctx.fillStyle = '#d8d0ff'; ctx.fillRect(0, floorY - 1, W, 2); // (the front edge of the floor glows)
+  // the fans watching from the stands: dim figures in a row at the back
+  for (const [id, p] of G.players) {
+    if (ids.includes(id)) continue;
+    const spr = G.sprites && G.sprites.get(id); if (!spr) continue;
+    const x = W / 2 + (posOf(id, p).x - cam.x) * sc * 0.6;
+    if (x < -60 || x > W + 60) continue;
+    ctx.save(); ctx.globalAlpha = 0.35; G.drawSprite(ctx, spr, x, floorY - up(1.1) - 15, 1, 0, Math.sin(t * 3 + id) > 0.6 ? { k: 'win', p: 0.5 } : null, 1, up(1.75) * 0.6, false); ctx.restore();
+  }
+  // the ring's barrier: glowing posts at each end
+  for (const x of [rx0, rx1]) {
+    const a = sx(x); if (a < -20 || a > W + 20) continue;
+    ctx.fillStyle = '#111018'; ctx.fillRect(a - 5, floorY - up(0.5), 10, up(0.5));
+    ctx.fillStyle = '#e8e2ff'; ctx.shadowColor = '#b388ff'; ctx.shadowBlur = 14; ctx.fillRect(a - 5, floorY - up(0.5), 10, 3); ctx.shadowBlur = 0;
+  }
+  // the two fighters: a shadow on the floor, then the fighter (lifted by a jump or a launch), always facing each other
+  const handY = lift => floorY - up(0.8) - lift;
+  ids.forEach((id, i) => {
+    const p = G.players.get(id), self = id === myId, other = xs[1 - i], flip = other == null ? 1 : other < xs[i] ? -1 : 1;
+    // taking a hit: knocked back away from them (a jab a little, a kick more, a beam most), then settling, with a white flash
+    const he = p.hitAt ? (now - p.hitAt) / 1000 : 9, hd = FT.HIT_T[p.hitK] || 0.3, hk = he < hd ? Math.min(1, he / 0.06) * (1 - he / hd) : 0;
+    const push = p.hitK === 'block' ? 0.08 : { punch: 0.18, kick: 0.35, beam: 0.55 }[G.hitGroup ? G.hitGroup(p.hitK) : 'punch'];
+    const x = sx(xs[i]) - flip * up(push) * hk, flash = he < 0.12 ? 1 - he / 0.12 : 0;
+    const lift = up(jumpK(self ? G.jumpT : p.jumpT) * FT.JUMP_H + (p.ayR || 0));
+    ctx.fillStyle = `rgba(0,0,0,${0.45 - Math.min(0.3, lift / 400)})`; ctx.beginPath(); ctx.ellipse(x, floorY + 2, up(0.32) * (1 - Math.min(0.5, lift / 500)), up(0.08), 0, 0, Math.PI * 2); ctx.fill();
+    const spr = G.sprites && G.sprites.get(id), ps = poseOf(id, p);
+    const gone = ps && ps.k === 'warp' && ps.p > 0.12 && ps.p < FT.warp.wind / FT.warp.cd; // (an instant strike: vanished)
+    if (spr) G.drawSprite(ctx, spr, x, floorY - lift - 15, flip, self ? G.walk : p.walk, ps, gone ? 0.12 : 1, up(1.75), false);
+    if (spr && flash > 0) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = flash * (p.hitK === 'block' ? 0.4 : 0.85); G.drawSprite(ctx, spr, x, floorY - lift - 15, flip, self ? G.walk : p.walk, ps, 1, up(1.75), false); ctx.restore(); }
+    ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = COLORS[p.slot];
+    ctx.fillText(nameOf(id) + (self ? ' (you)' : ''), x, floorY + 18);
+    const s = ps && FT[ps.k]; // (charging a beam: a growing ball of energy in the hands)
+    if (s && s.beam) {
+      const c = ps.p * Math.max(s.cd, s.wind + 0.05) / s.wind;
+      if (c < 1) {
+        const bx = x + flip * up(0.3), by = handY(lift), r = up(0.1 + 0.3 * c);
+        const gr = ctx.createRadialGradient(bx, by, 1, bx, by, r); gr.addColorStop(0, '#ffffff'); gr.addColorStop(0.4, ps.k === 'finalflash' ? '#ffe14d' : '#5fd0ff'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(bx, by, r * (1 + 0.1 * Math.sin(t * 50)), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  });
+  // beams: straight across from the hands
+  for (const b of G.beams) {
+    const s = FT[b.k]; if (!s) continue;
+    const age = b.t + (now - G.beamsAt) / 1000, grow = Math.min(1, Math.max(0, age / 0.12)), fade = Math.min(1, Math.max(0, (s.beam - age) / 0.15));
+    if (fade <= 0) continue;
+    const col = b.k === 'finalflash' ? '255,225,77' : '95,208,255', dir = Math.cos(b.a) < 0 ? -1 : 1, x0 = sx(b.x), x1 = x0 + dir * s.len * grow * sc, y = handY(0), w = up(s.w / TILE) * fade * (1 + 0.1 * Math.sin(t * 45));
+    ctx.lineCap = 'round';
+    for (const [lw, c] of [[w * 2.2, `rgba(${col},.25)`], [w * 1.2, `rgba(${col},.75)`], [w * 0.45, '#ffffff']]) { ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); }
+    ctx.fillStyle = `rgba(${col},.6)`; ctx.beginPath(); ctx.arc(x1, y, w * 1.4, 0, Math.PI * 2); ctx.fill();
+  }
+  // hit sparks: a white-hot flash and a ring where it landed (a slam's shockwave runs along the floor)
+  for (const sp of G.sparks) {
+    const k = (now - sp.t0) / 350; if (k > 1) continue;
+    const x = sx(sp.x), slam = sp.kind === 'slam', y = slam ? floorY : handY(0), r = up(slam ? 2.2 : 0.5) * (0.3 + k);
+    ctx.globalAlpha = 1 - k; ctx.strokeStyle = sp.kind === 'block' ? '#7fc8ff' : slam ? '#b388ff' : '#ffd54f'; ctx.lineWidth = 4 * (1 - k) + 1;
+    ctx.beginPath(); if (slam) ctx.ellipse(x, y, r, r * 0.18, 0, 0, Math.PI * 2); else ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    if (!slam) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, r * 0.35 * (1 - k), 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+  // what each hit was: a starburst with its word and the damage, rising above them
+  for (const f of G.fx) {
+    const k = f.t / f.d, s = (f.big ? 1.6 : 1.2) * (1.3 - 0.3 * k);
+    ctx.save(); ctx.translate(sx(f.x), floorY - up(1.75) - (1 - k) * 24); ctx.scale(s, s); ctx.globalAlpha = Math.min(1, k * 2);
+    ctx.fillStyle = f.color; ctx.beginPath();
+    for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2, r = i % 2 ? 11 : 19; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+    ctx.fill();
+    ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#2a1400'; ctx.fillText(f.text, 0, 0);
+    if (f.dmg) { ctx.font = 'bold 10px system-ui'; ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 3; ctx.strokeText(`-${f.dmg}`, 0, 22); ctx.fillText(`-${f.dmg}`, 0, 22); }
+    ctx.restore();
+  }
 }
 
 function renderFightEnd() {
@@ -1977,7 +2101,8 @@ function frame(now) {
   update(dt);
   if (!W || !H) return; // minimized or zero-size window: nothing to draw
   if (G && G.players.get(myId)) {
-    if (viewMode !== 'top' && v3d && v3d.ready) draw3D(t); else drawWorld(t); // top-down until the 3D view has loaded
+    if (G.mode === 'fight' && G.arena) drawSideFight(t); // (arena fights: side-on, like a 2D fighting game)
+    else if (viewMode !== 'top' && v3d && v3d.ready) draw3D(t); else drawWorld(t); // top-down until the 3D view has loaded
     drawHud(t);
   }
   else { ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = '#07070d'; ctx.fillRect(0, 0, W, H); }

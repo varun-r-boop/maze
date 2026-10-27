@@ -322,14 +322,20 @@ function kf(p, ...k) {
   return k[k.length - 1][1];
 }
 const TAU = Math.PI * 2;
+// how a hit of this kind knocks you about: 'punch' (the head snaps back), 'kick' (folded over sideways) or 'beam' (blown back)
+export const hitGroup = kind => ['punch', 'rush', 'upper', 'airjab', 'barrage'].includes(kind || 'punch') ? 'punch'
+  : ['kick', 'rising', 'divekick', 'airspike', 'tornado', 'slam', 'warp'].includes(kind) ? 'kick' : 'beam';
 // when a special fires, as a share of the whole move (from the fight numbers)
 const fireAt = k => { const s = window.Shared && window.Shared.FIGHT[k]; return s ? s.wind / Math.max(s.cd, s.wind + 0.05) : 0.5; };
+// each special's energy color (the aura, and the balls in the hands)
+const SPECIAL_COLOR = { kamehameha: '#5fd0ff', finalflash: '#ffe14d', barrage: '#ff8a1a', slam: '#b388ff', warp: '#e040fb' };
 // move: which way you're stepping, relative to where you face ({ f: forward, s: to your right }); walk: the step cycle
 export function poseFighter(model, pose, walk, move) {
   const U = model.userData, B = U.bones, live = !!U.live, now = live ? performance.now() / 1000 : 0;
   if (live && U.stopUntil && now < U.stopUntil) return; // (hit-stop: frozen mid-pose for a split second as a hit lands)
-  const k = pose && pose.k;
-  let p = pose ? Math.min(1, Math.max(0, pose.p || 0)) : 0;
+  let k = pose && pose.k, p = pose ? Math.min(1, Math.max(0, pose.p || 0)) : 0;
+  const special = k, vanish = k === 'warp' && p > 0.12 && p < fireAt('warp'); // (an instant strike: gone, then it lands as a kick)
+  if (k === 'warp' && p >= fireAt('warp')) { const f = fireAt('warp'); k = 'kick'; p = 0.12 + 0.88 * (p - f) / (1 - f); }
   if (live) { // (a knock-out plays its own fall, from when it starts)
     if (k === 'ko') { if (U.koT == null) U.koT = now; p = Math.min(1, (now - U.koT) / 1.2); } else U.koT = null;
   }
@@ -434,6 +440,19 @@ export function poseFighter(model, pose, walk, move) {
     const d = kf(p, [0, 0], [0.12, 1], [0.7, 1], [1, 0]);
     R.hips[2] = -0.55 * d; R.legR = [0, 0, -0.12 + 1.0 * d]; R.shinR[2] = -0.3 * (1 - d); R.legL[2] = 0.25 + 1.0 * d; R.shinL[2] = -0.42 - 1.4 * d;
     R.torso[2] = -0.06 - 0.25 * d; R.armL = [-0.3, 0, 0.36 - 0.9 * d]; R.armR = [0.3, 0, 0.21 - 0.9 * d]; SM.shinR = 1 + 0.2 * d;
+  } else if (k === 'barrage') { // dragon barrage: six punches, right and left in turn, so fast the fists smear, leaning right in
+    rate = 55;
+    const cyc = Math.min(5.999, Math.max(0, (p - 0.1) / 0.5 * 6)), idx = Math.floor(cyc), x = p < 0.1 || p > 0.6 ? 0 : Math.sin(Math.PI * (cyc - idx)), J = idx % 2 ? 'L' : 'R', O = J === 'R' ? 'L' : 'R', g2 = J === 'R' ? 1 : -1;
+    R['arm' + J] = [g2 * 0.1 * (1 - x), 0, (J === 'R' ? 0.21 : 0.36) + 1.4 * x]; R['fore' + J][2] = (J === 'R' ? 1.95 : 1.75) * (1 - x) + 0.04 * x;
+    R['arm' + O] = [-g2 * 0.15, 0, 0.5]; R['fore' + O][2] = 1.5; SM['fore' + J] = 1 + 0.45 * x; SM['arm' + J] = 1 + 0.15 * x;
+    R.torso[1] = -0.1 + 0.3 * g2 * x; R.torso[2] = -0.28; R.head[1] = 0.1 - 0.25 * g2 * x; R.legL[2] += 0.2; R.shinL[2] -= 0.2; hx = 0.06; aura = 0.6 * kf(p, [0, 0], [0.1, 1], [0.6, 1], [0.8, 0]);
+  } else if (k === 'slam') { // shockwave slam: crouch, leap up with both fists raised over the head, then hammer them into the floor
+    rate = 30;
+    const f = fireAt('slam'), cr = kf(p, [0, 0], [0.12, 1], [0.2, 0]), up = kf(p, [0.1, 0], [0.3, 1], [f - 0.06, 1], [f, 0]), dn = kf(p, [f - 0.06, 0], [f, 1], [0.85, 1], [1, 0]);
+    R.armL = [-0.2, 0, 0.36 + 2.6 * up + 1.0 * dn]; R.armR = [0.2, 0, 0.21 + 2.7 * up + 1.1 * dn]; R.foreL[2] = R.foreR[2] = 0.25 + 1.5 * (1 - up - dn);
+    R.torso = [0, -0.1, -0.06 + 0.25 * up - 0.65 * dn]; R.head = [0, 0.1, -0.15 * up + 0.35 * dn];
+    R.legL[2] = 0.25 + 0.6 * up + 0.9 * dn; R.shinL[2] = -0.42 - 1.0 * up - 1.4 * dn; R.legR[2] = -0.12 + 0.4 * up + 0.5 * dn; R.shinR[2] = -0.32 - 0.8 * up - 1.6 * dn;
+    hy += -0.1 * cr + 0.45 * up - 0.16 * dn; aura = Math.max(up, 0.6 * dn); oL = oR = 0.1 * up;
   } else if (k === 'kamehameha' || k === 'finalflash') {
     rate = 30;
     const f = fireAt(k), grow = Math.min(1, p / f);
@@ -460,12 +479,12 @@ export function poseFighter(model, pose, walk, move) {
     R.torso[2] = -0.06 - 0.15 * u; R.head[2] = 0.1 * u;
   } else if (k === 'hit') { // taking a hit: a jab snaps the head back and round, a hook kick folds you sideways, a beam blows you back
     rate = 40;
-    const kind = pose.kind || 'punch', hs = side === 'L' ? 1 : -1;
-    if (kind === 'punch' || kind === 'rush' || kind === 'upper' || kind === 'airjab') {
+    const kind = hitGroup(pose.kind), hs = side === 'L' ? 1 : -1;
+    if (kind === 'punch') {
       const q = kf(p, [0, 0], [0.12, 1], [1, 0]);
       R.head = [0.25 * hs * q, 0.1 + 0.4 * hs * q, 0.06 + 0.45 * q]; R.torso[2] += 0.15 * q; R.torso[1] += 0.12 * hs * q;
       R.armL[2] -= 0.12 * q; R.armR[2] -= 0.12 * q; hx = -0.04 * q;
-    } else if (kind === 'kick' || kind === 'rising' || kind === 'divekick' || kind === 'airspike' || kind === 'tornado') {
+    } else if (kind === 'kick') {
       const q = kf(p, [0, 0], [0.15, 1], [0.45, 1], [1, 0]);
       R.torso = [0.35 * q, -0.1, -0.06 - 0.3 * q]; R.head = [0.3 * q, 0.1, -0.1 * q];
       R.armL = [-0.3, 0, 0.15 + 0.2 * (1 - q)]; R.foreL[2] = 1.4; R.armR = [0.3, 0, 0.1 + 0.1 * (1 - q)]; R.foreR[2] = 1.5; // (arms down, covering the body)
@@ -523,16 +542,17 @@ export function poseFighter(model, pose, walk, move) {
   }
   if (U.aura) { // the aura: flaring up around the body as a special charges and fires
     const a = U.aura, h = U.height || 1.21, fl = 1 + 0.07 * Math.sin((live ? now : p) * 37) + 0.04 * Math.sin((live ? now : p) * 61);
+    if (vanish) aura = 1; // (where they vanished: a flash of their aura)
     a.visible = aura > 0.05;
-    if (a.visible) { a.scale.set(0.95 * h * fl, 1.55 * h * (0.85 + 0.15 * aura) * fl, 1); a.material.opacity = 0.7 * aura; a.material.color.set(k === 'finalflash' ? '#ffe14d' : '#5fd0ff'); }
+    if (a.visible) { a.scale.set(0.95 * h * fl, 1.55 * h * (0.85 + 0.15 * aura) * fl, 1); a.material.opacity = 0.7 * aura; a.material.color.set(SPECIAL_COLOR[special] || '#5fd0ff'); }
   }
   if (live) { // ducking and weaving fast: the body flickers (an afterimage)
-    const off = k === 'dodge' && p > 0.1 && p < 0.8 && Math.floor(now * 40) % 2 === 0;
+    const off = vanish || (k === 'dodge' && p > 0.1 && p < 0.8 && Math.floor(now * 40) % 2 === 0);
     if (off !== !!U.flickOff) { U.flickOff = off; model.traverse(o => { if (o.isMesh && !o.userData.glow) o.visible = !off; }); }
   }
   for (const b of ['armL', 'armR', 'foreL', 'foreR', 'legL', 'legR', 'shinL', 'shinR']) B[b].scale.y = SM[b] || 1;
   if (U.orbs) { // the energy balls: blue for a kamehameha, yellow for a final flash, flickering
-    const col = k === 'finalflash' ? '#ffe14d' : '#5fd0ff', fl = 1 + 0.12 * Math.sin((live ? now : p) * 60);
+    const col = SPECIAL_COLOR[special] || '#5fd0ff', fl = 1 + 0.12 * Math.sin((live ? now : p) * 60);
     U.orbs.forEach((o, i) => { const s = i ? oR : oL; o.visible = s > 0.035; o.scale.setScalar(s * fl); o.material.color.set(col); o.children[0].material.color.set(col); });
   }
 

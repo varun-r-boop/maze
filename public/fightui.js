@@ -18,7 +18,11 @@ const Sh = window.Shared, FT = Sh.FIGHT;
 export const SPECIAL_INFO = {
   kamehameha: 'Cup your hands at your side and charge a ball of blue energy, then fire it as a beam. Quick to charge.',
   finalflash: 'Fling your arms wide, charge a yellow ball in each hand, then slam them together for a huge beam. Slower, wider, stronger.',
+  barrage: 'Dart in and land six punches in a blur; the last one shoves them away. Get close first.',
+  slam: 'Leap up and smash the floor: a shockwave launches anyone near you, on every side.',
+  warp: "Vanish and reappear behind them with a kick they can't block (they can still dodge it). Works from far away.",
 };
+const SPECIAL_ICON = { kamehameha: '🌀', finalflash: '⚡', barrage: '👊', slam: '💥', warp: '👻' };
 const COLORS = ['#8a8f98', '#ffffff', '#151515', '#e53935', '#d9a066', '#4a2c1d', '#fb8c00', '#fdd835', '#43a047', '#4f9a94', '#26c6da', '#1e63e9', '#1a237e', '#ec4fd0', '#f2c9a8'];
 // line drawings of the shapes for the palette
 const ICON = {
@@ -83,7 +87,7 @@ export function openBuilder(host, start, onSave, opts = {}) {
         </div>
         <div class="ce-pane" data-pane="abil" hidden>
           <p class="ce-label">SPECIAL MOVE</p>
-          <div class="ce-specials">${Sh.FIGHT_SPECIALS.map(s => `<button data-sp="${s}"><b>${{ kamehameha: '🌀 Kamehameha', finalflash: '⚡ Final Flash' }[s]}</b><span>${SPECIAL_INFO[s]}</span></button>`).join('')}</div>
+          <div class="ce-specials">${Sh.FIGHT_SPECIALS.map(s => `<button data-sp="${s}"><b>${SPECIAL_ICON[s]} ${Sh.SPECIAL_NAMES[s]}</b><span>${SPECIAL_INFO[s]}</span></button>`).join('')}</div>
           <p class="ce-label">COMBO MOVES (EVERY FIGHTER HAS THEM)</p>
           <div class="ce-combos">${[['rush', 'J J J', 'A fast three-punch flurry'], ['rising', 'J J K', 'A kick straight up that launches them'], ['spin', 'K K', 'A full spin kick: hits all round and shoves them away'], ['upper', 'K J', 'Drop low and drive an uppercut: launches them'], ['divekick', 'Air: K', 'Kick down at them from the air'], ['airjab', 'Air: J', 'A quick punch in the air (keeps a launched fighter up)'], ['airspike', 'Air: J K', 'Meteor smash: hammer them into the floor; they bounce back up'], ['tornado', 'Air: K K', 'Tornado kick: a spinning double kick in the air']].map(([k, keys, info]) => `<button data-anim="${k}"><b>${Sh.FIGHT.MOVE_NAMES[k] || 'Air Jab'}</b> <kbd>${keys}</kbd><span>${info}</span></button>`).join('')}</div>
           <p class="note">Press the keys one after another (not too slowly). "Air" moves are while you're jumping (Space): launch them with a Rising Kick or Uppercut, jump after them, then air jab and meteor smash them. Hits that land close together count up a combo. Click a combo move to see it.</p>
